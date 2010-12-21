@@ -17,8 +17,41 @@
 
 #define NUMTEMPS 20
 
-short temptable[NUMTEMPS][2] = {
+short _thTempTable[NUMTEMPS][2] = {
 
+   {1, 628},
+   {54, 222},
+   {107, 184},
+   {160, 163},
+   {213, 149},
+   {266, 138},
+   {319, 128},
+   {372, 120},
+   {425, 112},
+   {478, 106},
+   {531, 99},
+   {584, 93},
+   {637, 86},
+   {690, 80},
+   {743, 73},
+   {796, 66},
+   {849, 57},
+   {902, 47},
+   {955, 33},
+   {1008, 4}
+ };
+
+#ifdef RAMPS
+// EPCOS 100K Thermistor (B57560G1104F)
+// Made with createTemperatureLookup.py (http://svn.reprap.org/trunk/reprap/firmware/Arduino/utilities/createTemperatureLookup.py)
+// ./createTemperatureLookup.py --r0=100000 --t0=25 --r1=0 --r2=4700 --beta=4092 --max-adc=1023
+// r0: 100000
+// t0: 25
+// r1: 0
+// r2: 4700
+// beta: 4092
+// max adc: 1023
+short _thNTempTable[NUMTEMPS][2] = {
    {1, 821},
    {54, 252},
    {107, 207},
@@ -40,6 +73,5 @@ short temptable[NUMTEMPS][2] = {
    {955, 34},
    {1008, 3}
  };
-
-
+#endif
 #endif
