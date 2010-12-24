@@ -200,8 +200,8 @@
  #endif
 #endif
 
-//#define RAMPS
-#define REPSTRAP
+#define RAMPS
+//#define REPSTRAP
 
 #ifdef RAMPS
   #define X_STEP_PIN         26

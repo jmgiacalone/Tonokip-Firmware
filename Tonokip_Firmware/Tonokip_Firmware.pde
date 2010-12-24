@@ -285,7 +285,7 @@ inline void process_commands()
       case 106: //M106 Ss Fan On
         if(code_seen('S'))
         {
-          digitalWrite(FAN_PIN, constrain(code_value(),0,255));
+          analogWrite(FAN_PIN, constrain(code_value(),0,255));
         }
         break;
       case 107: //M107 Fan Off
@@ -353,42 +353,47 @@ inline void process_commands()
 inline void reference_x()
 {
         feedrate = 1000;
-        pre_move(-(X_MAX_LENGTH + 5), current_y, current_z, current_e);
+        pre_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
         current_x = 0;
-        pre_move(5, current_y, current_z, current_e);
+        pre_move(1, current_y, current_z, current_e);
         feedrate = 100;
-        pre_move(-5, current_y, current_z, current_e);
+        pre_move(-1, current_y, current_z, current_e);
         current_x = 0;
         feedrate = 1500;
 }
 inline void reference_y()
 {
         feedrate = 1000;
-        pre_move(current_x, -(Y_MAX_LENGTH + 5), current_z, current_e);
+        pre_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
         current_y = 0;
-        pre_move(current_x, 5, current_z, current_e);
+        pre_move(current_x, 1, current_z, current_e);
         feedrate = 100;
-        pre_move(current_x, -5, current_z, current_e);
+        pre_move(current_x, -1, current_z, current_e);
         current_y = 0;
         feedrate = 1500;
 }
 inline void reference_z()
 {
         feedrate = 100;
-        pre_move(current_x, current_y, -(Z_MAX_LENGTH + 5), current_e);
+        pre_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
         current_z = 0;
-        pre_move(current_x, current_y, 2, current_e);
-        feedrate = 50;
+        pre_move(current_x, current_y, 1, current_e);
         pre_move(current_x, current_y, -1, current_e);
         current_z = 0;
         feedrate = 1500;
 }
 inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
 {
+  int x_steps=0;
+  int y_steps=0;
+  int z_steps=0;
+  int e_steps=0;
+  
           x_steps_to_take = abs(dest_x - current_x)*x_steps_per_unit;
           y_steps_to_take = abs(dest_y - current_y)*y_steps_per_unit;
           z_steps_to_take = abs(dest_z - current_z)*z_steps_per_unit;
-          e_steps_to_take = abs(dest_e - current_e)*e_steps_per_unit;
+          //e_steps_to_take = abs(dest_e - current_e)*e_steps_per_unit;
+          e_steps_to_take = abs(dest_e)*e_steps_per_unit;
   
           #define X_TIME_FOR_MOVE ((float)x_steps_to_take / (x_steps_per_unit*feedrate/60000000))
           #define Y_TIME_FOR_MOVE ((float)y_steps_to_take / (y_steps_per_unit*feedrate/60000000))
@@ -431,9 +436,112 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
             Serial.println("");
           }
           
-          linear_move(x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take); // make the move
-          //ClearToSend();
-          return;
+          //linear_move(x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take); // make the move
+
+  //Determine direction of movement
+  //Find direction
+  if(dest_x >= current_x) direction_x=1;
+  else direction_x=0;
+  if(dest_y >= current_y) direction_y=1;
+  else direction_y=0;
+  if(dest_z >= current_z) direction_z=1;
+  else direction_z=0;
+  if(dest_e >= current_e) direction_e=1;
+  else direction_e=0;
+  //Set direction
+  if (direction_x) digitalWrite(X_DIR_PIN,!INVERT_X_DIR);
+  else digitalWrite(X_DIR_PIN,INVERT_X_DIR);
+  if (direction_y) digitalWrite(Y_DIR_PIN,!INVERT_Y_DIR);
+  else digitalWrite(Y_DIR_PIN,INVERT_Y_DIR);
+  if (direction_z) digitalWrite(Z_DIR_PIN,!INVERT_Z_DIR);
+  else digitalWrite(Z_DIR_PIN,INVERT_Z_DIR);
+  if (direction_e) digitalWrite(E_DIR_PIN,!INVERT_E_DIR);
+  else digitalWrite(E_DIR_PIN,INVERT_E_DIR);
+  
+  //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
+  if(x_steps_to_take) enable_x();
+  if(y_steps_to_take) enable_y();
+  if(z_steps_to_take) enable_z();
+  if(e_steps_to_take) enable_e();
+
+  if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_to_take=0;
+  if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
+  if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
+  
+  //while(x_steps_remaining > 0 || y_steps_remaining > 0 || z_steps_remaining > 0 || e_steps_remaining > 0) // move until no more steps remain
+  while(x_steps_to_take + y_steps_to_take + z_steps_to_take + e_steps_to_take > 0) // move until no more steps remain
+  { 
+    if(x_steps_to_take)
+    {
+      if ((micros()-previous_micros_x) >= x_interval)
+      {
+        do_x_step();
+        x_steps_to_take--;
+        x_steps++;
+      }
+      if(!direction_x)
+      {
+        if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING)
+        {
+          x_steps_to_take=0;
+        }
+      }
+    }
+    
+    if(y_steps_to_take)
+    {
+      if ((micros()-previous_micros_y) >= y_interval)
+      {
+        do_y_step();
+        y_steps_to_take--;
+        y_steps++;
+      }
+      if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
+    }
+    
+    if(z_steps_to_take)
+    {
+      if ((micros()-previous_micros_z) >= z_interval)
+      {
+        do_z_step();
+        z_steps_to_take--;
+        z_steps++;
+      }
+      if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
+    }    
+    
+    if(e_steps_to_take)
+    {
+      if ((micros()-previous_micros_e) >= e_interval)
+      {
+        do_e_step();
+        e_steps_to_take--;
+      }
+    }
+    
+    if( (millis() - previous_millis_heater) >= HEAT_INTERVAL )
+    {
+      manage_heaters();      
+      manage_inactivity(2);
+    }
+  } //end while
+  
+  if(DISABLE_X) disable_x();
+  if(DISABLE_Y) disable_y();
+  if(DISABLE_Z) disable_z();
+  if(DISABLE_E) disable_e();
+  
+  // Update current position partly based on direction, we probably can combine this with the direction code above...
+  if (destination_x > current_x) current_x = current_x + x_steps/x_steps_per_unit;
+  else current_x = current_x - x_steps/x_steps_per_unit;
+  if (destination_y > current_y) current_y = current_y + y_steps/y_steps_per_unit;
+  else current_y = current_y - y_steps/y_steps_per_unit;
+  if (destination_z > current_z) current_z = current_z + z_steps/z_steps_per_unit;
+  else current_z = current_z - z_steps/z_steps_per_unit;
+//  if (destination_e > current_e) current_e = current_e + e_steps_to_take/e_steps_per_unit;
+//  else current_e = current_e - e_steps_to_take/e_steps_per_unit;
+          
+  return;
 }
 inline void FlushSerialRequestResend()
 {
@@ -465,7 +573,7 @@ inline void get_coordinates()
     if(next_feedrate > 0.0) feedrate = next_feedrate;
   }
   
-  //Find direction
+/*  //Find direction
   if(destination_x >= current_x) direction_x=1;
   else direction_x=0;
   if(destination_y >= current_y) direction_y=1;
@@ -474,7 +582,7 @@ inline void get_coordinates()
   else direction_z=0;
   if(destination_e >= current_e) direction_e=1;
   else direction_e=0;
-  
+*/
   
   if (min_software_endstops) {
     if (destination_x < 0) destination_x = 0.0;
@@ -491,76 +599,10 @@ inline void get_coordinates()
   if(feedrate > max_feedrate) feedrate = max_feedrate;
 }
 
-void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
+/*void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
 {
-  //Determine direction of movement
-  if (destination_x > current_x) digitalWrite(X_DIR_PIN,!INVERT_X_DIR);
-  else digitalWrite(X_DIR_PIN,INVERT_X_DIR);
-  if (destination_y > current_y) digitalWrite(Y_DIR_PIN,!INVERT_Y_DIR);
-  else digitalWrite(Y_DIR_PIN,INVERT_Y_DIR);
-  if (destination_z > current_z) digitalWrite(Z_DIR_PIN,!INVERT_Z_DIR);
-  else digitalWrite(Z_DIR_PIN,INVERT_Z_DIR);
-  if (destination_e > current_e) digitalWrite(E_DIR_PIN,!INVERT_E_DIR);
-  else digitalWrite(E_DIR_PIN,INVERT_E_DIR);
-  
-  //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
-  if(x_steps_remaining) enable_x();
-  if(y_steps_remaining) enable_y();
-  if(z_steps_remaining) enable_z();
-  if(e_steps_remaining) enable_e();
-
-  if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-  if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
-  if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
-  
-  //previous_millis_heater = millis();
-
-  //while(x_steps_remaining > 0 || y_steps_remaining > 0 || z_steps_remaining > 0 || e_steps_remaining > 0) // move until no more steps remain
-  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) // move until no more steps remain
-  { 
-    if(x_steps_remaining) {
-      if ((micros()-previous_micros_x) >= x_interval) { do_x_step(); x_steps_remaining--; }
-      if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-    }
-    
-    if(y_steps_remaining) {
-      if ((micros()-previous_micros_y) >= y_interval) { do_y_step(); y_steps_remaining--; }
-      if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
-    }
-    
-    if(z_steps_remaining) {
-      if ((micros()-previous_micros_z) >= z_interval) { do_z_step(); z_steps_remaining--; }
-      if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
-    }    
-    
-    if(e_steps_remaining) {
-      if ((micros()-previous_micros_e) >= e_interval) { do_e_step(); e_steps_remaining--; }
-    }
-    
-    if( (millis() - previous_millis_heater) >= HEAT_INTERVAL ) {
-      manage_heaters();
-      //previous_millis_heater = millis();
-      
-      manage_inactivity(2);
-    }
-  }
-  
-  if(DISABLE_X) disable_x();
-  if(DISABLE_Y) disable_y();
-  if(DISABLE_Z) disable_z();
-  if(DISABLE_E) disable_e();
-  
-  // Update current position partly based on direction, we probably can combine this with the direction code above...
-  if (destination_x > current_x) current_x = current_x + x_steps_to_take/x_steps_per_unit;
-  else current_x = current_x - x_steps_to_take/x_steps_per_unit;
-  if (destination_y > current_y) current_y = current_y + y_steps_to_take/y_steps_per_unit;
-  else current_y = current_y - y_steps_to_take/y_steps_per_unit;
-  if (destination_z > current_z) current_z = current_z + z_steps_to_take/z_steps_per_unit;
-  else current_z = current_z - z_steps_to_take/z_steps_per_unit;
-  if (destination_e > current_e) current_e = current_e + e_steps_to_take/e_steps_per_unit;
-  else current_e = current_e - e_steps_to_take/e_steps_per_unit;
 }
-
+*/
 
 inline void do_x_step()
 {
