@@ -16,11 +16,11 @@ const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 // units are in millimeters or whatever length unit you prefer: inches,football-fields,parsecs etc
 
 //Calibration variables
-float x_steps_per_unit = 80;
-float y_steps_per_unit = 80;
-float z_steps_per_unit = 4571.43;
-float e_steps_per_unit = 80;
-float max_feedrate = 18000;
+float x_steps_per_unit = 20;
+float y_steps_per_unit = 20;
+float z_steps_per_unit = 2000;
+float e_steps_per_unit = 21;
+float max_feedrate = 9000;
 
 //float x_steps_per_unit = 10.047;
 //float y_steps_per_unit = 10.047;
@@ -43,15 +43,15 @@ const bool DISABLE_E = false;
 const bool INVERT_X_DIR = true;
 const bool INVERT_Y_DIR = false;
 const bool INVERT_Z_DIR = true;
-const bool INVERT_E_DIR = false;
+const bool INVERT_E_DIR = true;
 
 //Endstop Settings
-const bool ENDSTOPS_INVERTING = 0;
+const bool ENDSTOPS_INVERTING = 1;
 const bool min_software_endstops = false; //If true, axis won't move to coordinates less than zero.
 const bool max_software_endstops = true;  //If true, axis won't move to coordinates greater than the defined lengths below.
-const int X_MAX_LENGTH = 140;
-const int Y_MAX_LENGTH = 140;
-const int Z_MAX_LENGTH = 100;
+const int X_MAX_LENGTH = 245;
+const int Y_MAX_LENGTH = 165;
+const int Z_MAX_LENGTH = 130;
 
 #define BAUDRATE 115200
 
@@ -60,12 +60,12 @@ const int Z_MAX_LENGTH = 100;
 #define UZONE 2
 
 //RESISTOR 12 OHM
-#define PID_MAX 255 // limits current to nozzle
-#define PID_INTEGRAL_DRIVE_MAX 180 //180
-#define PID_PGAIN 1.6 //7
-#define PID_IGAIN 0.02//0.04
+#define PID_MAX 150 // limits current to nozzle
+#define PID_INTEGRAL_DRIVE_MAX 95
+#define PID_PGAIN 1.45//1.45
+#define PID_IGAIN 0.02//0.02
 #define PID_DGAIN 1.0//1.0
 
-#define TEMP_MULTIPLIER 4 //1
+#define TEMP_MULTIPLIER 4
 
 #endif
