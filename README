@@ -1,3 +1,8 @@
+2011 01 16 - First print
+- Homing axes works correctly
+- Fixed overflow on Z axis moves
+- M109 and M141 work as expected
+
 Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
 
 TODO:
