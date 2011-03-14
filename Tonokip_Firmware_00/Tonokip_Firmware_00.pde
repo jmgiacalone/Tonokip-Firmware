@@ -1,23 +1,30 @@
 // Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
 // Licence: GPL
-#define REPSTRAP
+//#define REPSTRAP
+//#define SANGUINOLOLU
+#define MFUK
 
 #ifdef REPSTRAP
   #include "configuration_strap.h"
-  #include "pins_strap.h"
+  //#include "pins_strap.h"
+#elif defined MFUK
+  #include "configuration_mfuk.h"
+#elif defined SANGUINOLOLU
+  #include "configuration_sanguinololu.h"
+  //#include "pins_strap.h"
 #else
   #include "configuration.h"
-  #include "pins.h"
+  //#include "pins.h"
 #endif
-#include "ThermistorTable.h"
+//#include "ThermistorTable.h"
 
 // look here for descriptions of gcodes: http://linuxcnc.org/handbook/gcode/g-code.html
 // http://objects.reprap.org/wiki/Mendel_User_Manual:_RepRapGCodes
 
 //Implemented Codes
 //-------------------
-// G0 -> G1
-// G1  - Coordinated Movement X Y Z E
+// G0  - Rapid feedrate (non-modal)
+// G1  - Coordinated Movement X Y Z E (permanently modal so not necessary for feed move)
 // G4  - Dwell S<seconds> or P<milliseconds>
 // G28 - reference X Y Z axes
 // G90 - Use Absolute Coordinates
@@ -53,7 +60,8 @@ float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 float x_interval, y_interval, z_interval, e_interval; // for speed delay
 float feedrate = 1500, next_feedrate;
 float time_for_move;
-long gcode_N, gcode_LastN;
+long gcode_N;
+long gcode_LastN = 0;
 bool relative_mode = false;  //Determines Absolute or Relative Coordinates
 bool relative_mode_e = true;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
 
@@ -110,14 +118,14 @@ void setup()
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
   
-//#ifdef REPSTRAP
+#ifdef THERMOCOUPLE
   pinMode(MAX6675_EN,OUTPUT);
   pinMode(MAX6675_SO,INPUT);
   pinMode(MAX6675_SCK,OUTPUT);
   pinMode(HEATER_1_PIN,OUTPUT);
   digitalWrite(MAX6675_EN,HIGH);
 
-//#endif  
+#endif  
 
   pinMode(TEMP_0_PIN,INPUT);
   //pinMode(TEMP_1_PIN,INPUT);
@@ -126,6 +134,7 @@ void setup()
   
   Serial.begin(BAUDRATE);
   Serial.println("start");
+  Serial.println("ok");
   Serial.println("ok");
 }
 
@@ -182,6 +191,7 @@ inline void process_commands()
 {
   unsigned long codenum; //throw away variable
   unsigned long previous_millis=0;
+  unsigned int oldFeed;
   
   if(code_seen('N'))
   {
@@ -232,6 +242,17 @@ inline void process_commands()
     switch((int)code_value())
     {
       case 0: // G0 -> G1
+        get_coordinates(); // For X Y Z E F
+        oldFeed = feedrate;
+        if(code_seen('Z'))
+        {
+          feedrate = RAPID_Z;
+        }else{
+          feedrate = RAPID_XY;
+        }
+        pre_move(destination_x,destination_y,destination_z,destination_e);
+        feedrate = oldFeed;
+        break;        
       case 1: // G1
         get_coordinates(); // For X Y Z E F
         pre_move(destination_x,destination_y,destination_z,destination_e);
@@ -257,10 +278,23 @@ inline void process_commands()
         relative_mode = true;
         break;
       case 92: // G92
-        if(code_seen('X')) current_x = code_value();
-        if(code_seen('Y')) current_y = code_value();
-        if(code_seen('Z')) current_z = code_value();
-        if(code_seen('E')) current_e = code_value();
+        if(code_seen('X')){
+          current_x = code_value();
+          break;
+        }
+        if(code_seen('Y')){
+          current_y = code_value();
+          break;
+        }
+        if(code_seen('Z')){
+          current_z = code_value();
+          break;
+        }
+        if(code_seen('E')){
+          current_e = code_value();
+          break;
+        }
+        current_x = current_y = current_z = current_e = 0;
         break;
         
     }
@@ -276,6 +310,12 @@ inline void process_commands()
         if (code_seen('S')) bed_targ = code_value();
         break;
       case 105: // M105 - report temps
+        Serial.print("T:");
+        Serial.print( nozzle_curr / TEMP_MULTIPLIER );
+        Serial.print(" B:");
+        Serial.println( bed_curr ); 
+        break;
+      case 205:
         Serial.print("Nc:");
         Serial.print( nozzle_curr / TEMP_MULTIPLIER );
         Serial.print(" Nh:");
@@ -286,9 +326,11 @@ inline void process_commands()
         Serial.println( bed_curr ); 
         Serial.print(" Bt:");
         Serial.println( bed_targ ); 
-        //if(!code_seen('N')) return;  // If M105 is sent from generated gcode, then it needs a response.
         break;
-      case 205:
+      case 905:
+        Serial.print("Ta: ");
+        Serial.print(analogRead(TEMP_1_PIN));
+        Serial.print(" Tb: ");
         Serial.println(analogRead(TEMP_0_PIN));
         break;
       case 109: // M109 - Wait for nozzle to reach target temp
@@ -300,8 +342,10 @@ inline void process_commands()
           {
             if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
             {
-              Serial.print("Nozzle CURR:");
-              Serial.println( nozzle_curr / TEMP_MULTIPLIER ); 
+              Serial.print("T:");
+              Serial.print( nozzle_curr / TEMP_MULTIPLIER ); 
+              Serial.print(" / ");
+              Serial.println( nozzle_targ / TEMP_MULTIPLIER ); 
               previous_millis = millis(); 
             }
             manage_heaters();
@@ -317,8 +361,10 @@ inline void process_commands()
            {
              if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
              {
-               Serial.print("Bed CURR:");
-               Serial.println( bed_curr ); 
+               Serial.print("B:");
+               Serial.print( bed_curr ); 
+               Serial.print(" / ");
+               Serial.println( bed_targ ); 
                previous_millis = millis(); 
              }
              manage_heaters();
@@ -351,6 +397,12 @@ inline void process_commands()
         disable_y();
         disable_z();
         disable_e();
+        break;
+      case 184:
+        enable_x();
+        enable_y();
+        enable_z();
+        enable_e();
         break;
       case 85: // M85
         code_seen('S');
@@ -627,7 +679,7 @@ inline void get_coordinates()
   else direction_e=0;
 */
   
-  if (min_software_endstops) {
+  if (min_software_endstops && !NotHome) {
     if (destination_x < 0) destination_x = 0.0;
     if (destination_y < 0) destination_y = 0.0;
     if (destination_z < 0) destination_z = 0.0;
@@ -638,8 +690,11 @@ inline void get_coordinates()
     if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
     if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
   }
-  
-  if(feedrate > max_feedrate) feedrate = max_feedrate;
+  if(code_seen('Z')) {
+    feedrate = min(feedrate,RAPID_Z);
+  }else{
+    feedrate = min(feedrate,RAPID_XY);
+  }
 }
 
 /*void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
@@ -707,11 +762,11 @@ void manage_nozzle()
     int temp_iState_min = -PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     int temp_iState_max = PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     
-//#ifdef REPSTRAP
+#ifdef THERMOCOUPLE
     tcTemperature();
-//#else
-//    nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN);
-//#endif
+#else
+    nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
+#endif
 
     // code for PID control
     error = nozzle_targ - nozzle_curr;
@@ -735,7 +790,7 @@ void manage_bed()
     int prev_curr = bed_curr;
     int zone;
     // code for thermistor bang-bang control
-    bed_curr = thTemperature(_thTempTable, TEMP_0_PIN);
+    bed_curr = thTemperature(_thTempTable, TEMP_0_PIN, bNUMTEMPS);
     if(bed_curr >= prev_curr)
     {
       zone = bed_targ - LZONE;
@@ -765,7 +820,7 @@ void manage_bed()
   }
 */
 }
-int thTemperature(short table[][2], int temp_pin)
+int thTemperature(short table[][2], int temp_pin, int numtemps)
 {
   int raw = analogRead(temp_pin);
   int curr=0;
@@ -773,7 +828,7 @@ int thTemperature(short table[][2], int temp_pin)
 
   // TODO: This should do a binary chop
 
-  for (i=1; i<NUMTEMPS; i++)
+  for (i=1; i<numtemps; i++)
   {
     if (table[i][0] > raw)
     {
@@ -786,14 +841,14 @@ int thTemperature(short table[][2], int temp_pin)
   }
 
   // Overflow: Set to last value in the table
-  if (i >= NUMTEMPS) curr = table[i-1][1];
+  if (i >= numtemps) curr = table[i-1][1];
   // Clamp to byte
   //if (celsius > 255) celsius = 255; 
   //else if (celsius < 0) celsius = 0; 
   return curr;
 }
 
-//#ifdef REPSTRAP
+#ifdef THERMOCOUPLE
 void tcTemperature()
 {
   int value = 0;
@@ -830,7 +885,7 @@ void tcTemperature()
   }
 
 }
-//#endif
+#endif
 // Takes temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
