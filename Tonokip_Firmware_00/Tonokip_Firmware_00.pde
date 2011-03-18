@@ -2,7 +2,8 @@
 // Licence: GPL
 //#define REPSTRAP
 //#define SANGUINOLOLU
-#define MFUK
+//#define MFUK
+#define RAMPS
 
 #ifdef REPSTRAP
   #include "configuration_strap.h"
@@ -12,9 +13,11 @@
 #elif defined SANGUINOLOLU
   #include "configuration_sanguinololu.h"
   //#include "pins_strap.h"
-#else
+#elif defined RAMPS
   #include "configuration.h"
   //#include "pins.h"
+#else
+  #error Oops!  Make sure you have defined a machine!
 #endif
 //#include "ThermistorTable.h"
 
@@ -304,38 +307,62 @@ inline void process_commands()
     switch( (int)code_value() ) 
     {
       case 104: // M104 - set nozzle temp
-        if (code_seen('S')) nozzle_targ = code_value() * TEMP_MULTIPLIER;
+        if (code_seen('S'))
+         {
+#ifdef THERMOCOUPLE
+           nozzle_targ = code_value() * TEMP_MULTIPLIER;
+#else
+           nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
+#endif
+         }
         break;
       case 140: // M140 - set bed temp
-        if (code_seen('S')) bed_targ = code_value();
+        if (code_seen('S')) bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
         break;
       case 105: // M105 - report temps
         Serial.print("T:");
-        Serial.print( nozzle_curr / TEMP_MULTIPLIER );
+#ifdef THERMOCOUPLE
+#define NOZZLE_OUT nozzle_curr / TEMP_MULTIPLIER
+#else
+#define NOZZLE_OUT analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS)
+#endif
+        Serial.print( NOZZLE_OUT );
         Serial.print(" B:");
-        Serial.println( bed_curr ); 
+        Serial.println( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
         break;
       case 205:
+#ifdef THERMOCOUPLE
         Serial.print("Nc:");
         Serial.print( nozzle_curr / TEMP_MULTIPLIER );
         Serial.print(" Nh:");
         Serial.print( output );
         Serial.print(" Nt:");
         Serial.print( nozzle_targ / TEMP_MULTIPLIER );
+#else
+        Serial.print("Nc:");
+        Serial.print( analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS) );
+        Serial.print(" Nh:");
+        Serial.print( output );
+        Serial.print(" Nt:");
+        Serial.print( analog2temp(nozzle_targ, _thNTempTable, nNUMTEMPS) );
+#endif
         Serial.print(" Bc:");
-        Serial.println( bed_curr ); 
+        Serial.println( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
         Serial.print(" Bt:");
-        Serial.println( bed_targ ); 
+        Serial.println( analog2temp(bed_targ, _thTempTable, bNUMTEMPS) ); 
         break;
       case 905:
+#ifndef THERMOCOUPLE
         Serial.print("Ta: ");
         Serial.print(analogRead(TEMP_1_PIN));
+#endif        
         Serial.print(" Tb: ");
         Serial.println(analogRead(TEMP_0_PIN));
         break;
       case 109: // M109 - Wait for nozzle to reach target temp
         if (code_seen('S'))
         {
+#ifdef THERMOCOUPLE
           nozzle_targ = code_value() * TEMP_MULTIPLIER;
           previous_millis = millis(); 
           while(nozzle_curr < (nozzle_targ - NZONE * TEMP_MULTIPLIER))
@@ -350,19 +377,35 @@ inline void process_commands()
             }
             manage_heaters();
           }
+#else
+          nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
+          previous_millis = millis(); 
+          while(nozzle_curr < (nozzle_targ - NZONE))
+          {
+            if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
+            {
+              Serial.print("T:");
+              Serial.print( analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS) ); 
+              Serial.print(" / ");
+              Serial.println( analog2temp(nozzle_targ, _thNTempTable, nNUMTEMPS) ); 
+              previous_millis = millis(); 
+            }
+            manage_heaters();
+          }
+#endif
         }
         break;
       case 141: // M141 - Wait for bed to reach target temp
         if (code_seen('S'))
          {
-           bed_targ = code_value();
+           bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
            previous_millis = millis(); 
            while(bed_curr < bed_targ)
            {
              if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
              {
                Serial.print("B:");
-               Serial.print( bed_curr ); 
+               Serial.print( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
                Serial.print(" / ");
                Serial.println( bed_targ ); 
                previous_millis = millis(); 
@@ -765,7 +808,8 @@ void manage_nozzle()
 #ifdef THERMOCOUPLE
     tcTemperature();
 #else
-    nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
+    //nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
+    nozzle_curr = 1023 - analogRead(TEMP_1_PIN);
 #endif
 
     // code for PID control
@@ -790,7 +834,8 @@ void manage_bed()
     int prev_curr = bed_curr;
     int zone;
     // code for thermistor bang-bang control
-    bed_curr = thTemperature(_thTempTable, TEMP_0_PIN, bNUMTEMPS);
+    //bed_curr = thTemperature(_thTempTable, TEMP_0_PIN, bNUMTEMPS);
+    bed_curr = 1023 - analogRead(TEMP_0_PIN);
     if(bed_curr >= prev_curr)
     {
       zone = bed_targ - LZONE;
@@ -820,7 +865,7 @@ void manage_bed()
   }
 */
 }
-int thTemperature(short table[][2], int temp_pin, int numtemps)
+/*int thTemperature(short table[][2], int temp_pin, int numtemps)
 {
   int raw = analogRead(temp_pin);
   int curr=0;
@@ -847,7 +892,7 @@ int thTemperature(short table[][2], int temp_pin, int numtemps)
   //else if (celsius < 0) celsius = 0; 
   return curr;
 }
-
+*/
 #ifdef THERMOCOUPLE
 void tcTemperature()
 {
@@ -889,62 +934,55 @@ void tcTemperature()
 // Takes temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
-/*float temp2analog(int celsius) {
-  if(USE_THERMISTOR) {
+float temp2analog(int celsius, short table[][2], int numtemps) {
     int raw = 0;
     byte i;
     
-    for (i=1; i<NUMTEMPS; i++)
+    for (i=1; i<numtemps; i++)
     {
-      if (_temptable[i][1] < celsius)
+      if (table[i][1] < celsius)
       {
-        raw = _temptable[i-1][0] + 
-          (celsius - _temptable[i-1][1]) * 
-          (_temptable[i][0] - _temptable[i-1][0]) /
-          (_temptable[i][1] - _temptable[i-1][1]);
+        raw = table[i-1][0] + 
+          (celsius - table[i-1][1]) * 
+          (table[i][0] - table[i-1][0]) /
+          (table[i][1] - table[i-1][1]);
       
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == NUMTEMPS) raw = _temptable[i-1][0];
+    if (i == numtemps) raw = table[i-1][0];
 
     return 1023 - raw;
-  } else {
-    return celsius * (1024.0/(5.0*100.0));
-  }
 }
 
 // Derived from RepRap FiveD extruder::getTemperature()
-float analog2temp(int raw) {
-  if(USE_THERMISTOR) {
+float analog2temp(int raw, short table[][2], int numtemps) {
     int celsius = 0;
     byte i;
+    int raw_ = 1023 - raw;
 
-    for (i=1; i<NUMTEMPS; i++)
+    for (i=1; i<numtemps; i++)
     {
-      if (_temptable[i][0] > raw)
+      if (table[i][0] > raw_)
       {
-        celsius  = _temptable[i-1][1] + 
-          (raw - _temptable[i-1][0]) * 
-          (_temptable[i][1] - _temptable[i-1][1]) /
-          (_temptable[i][0] - _temptable[i-1][0]);
+        celsius  = table[i-1][1] + 
+          (raw_ - table[i-1][0]) * 
+          (table[i][1] - table[i-1][1]) /
+          (table[i][0] - table[i-1][0]);
 
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == NUMTEMPS) celsius = _temptable[i-1][1];
+    if (i == numtemps) celsius = table[i-1][1];
 
     return celsius;
     
-  } else {
-    return raw * ((5.0*100.0)/1024.0);
-  }
 }
-*/
+
 inline void kill(byte debug)
 {
   if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
