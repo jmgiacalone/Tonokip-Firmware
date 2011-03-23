@@ -22,6 +22,8 @@ float y_steps_per_unit = 20;
 float z_steps_per_unit = 2000;
 float e_steps_per_unit = 21;
 float max_feedrate = 9000;
+#define RAPID_Z 500
+#define RAPID_XY 6000
 
 //float x_steps_per_unit = 10.047;
 //float y_steps_per_unit = 10.047;
@@ -71,8 +73,8 @@ const int Z_MAX_LENGTH = 130;
 #define TEMP_MULTIPLIER 4
 #define NZONE 5
 
-#define NUMTEMPS 20
-short _thTempTable[NUMTEMPS][2] = {
+#define bNUMTEMPS 20
+short _thTempTable[bNUMTEMPS][2] = {
 
    {1, 628},
    {54, 222},

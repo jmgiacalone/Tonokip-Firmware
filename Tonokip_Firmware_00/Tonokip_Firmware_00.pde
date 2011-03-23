@@ -146,7 +146,7 @@ void loop()
 {
   get_command();
   manage_heaters();
-  manage_inactivity(1); //shutdown if not receiving any new commands
+  //manage_inactivity(1); //shutdown if not receiving any new commands
 }
 
 inline void get_command() 
@@ -407,7 +407,7 @@ inline void process_commands()
                Serial.print("B:");
                Serial.print( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
                Serial.print(" / ");
-               Serial.println( bed_targ ); 
+               Serial.println( analog2temp(bed_targ, _thTempTable, bNUMTEMPS) ); 
                previous_millis = millis(); 
              }
              manage_heaters();
