@@ -1,23 +1,37 @@
 // Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
 // Licence: GPL
 //#define REPSTRAP
+//#define SANGUINOLOLU
+//#define MFUK
+#define RAMPS
 
 #ifdef REPSTRAP
   #include "configuration_strap.h"
-  #include "pins_strap.h"
-#else
+  //#include "pins_strap.h"
+#elif defined MFUK
+  #include "configuration_mfuk.h"
+#elif defined SANGUINOLOLU
+  #include "configuration_sanguinololu.h"
+  //#include "pins_strap.h"
+#elif defined RAMPS
   #include "configuration.h"
-  #include "pins.h"
+  //#include "pins.h"
+#else
+  #error Oops!  Make sure you have defined a machine!
 #endif
-#include "ThermistorTable.h"
+#ifdef SDSUPPORT
+#include <SdFat.h>
+#include <SdFatUtil.h>
+#endif
+//#include "ThermistorTable.h"
 
 // look here for descriptions of gcodes: http://linuxcnc.org/handbook/gcode/g-code.html
 // http://objects.reprap.org/wiki/Mendel_User_Manual:_RepRapGCodes
 
 //Implemented Codes
 //-------------------
-// G0 -> G1
-// G1  - Coordinated Movement X Y Z E
+// G0  - Rapid feedrate (non-modal)
+// G1  - Coordinated Movement X Y Z E (permanently modal so not necessary for feed move)
 // G4  - Dwell S<seconds> or P<milliseconds>
 // G28 - reference X Y Z axes
 // G90 - Use Absolute Coordinates
@@ -35,6 +49,14 @@
 // M141 - Wait for bed temp to reach target
 
 //Custom M Codes
+// M20  - List SD card
+// M21  - Init SD card
+// M22  - Release SD card
+// M23  - Select SD file (M23 filename.g)
+// M24  - Start/resume SD print
+// M25  - Pause SD print
+// M26  - Set SD position in bytes (M26 S12345)
+// M27  - Report SD print status
 // M80  - Turn on Power Supply
 // M81  - Turn off Power Supply
 // M82  - Set E codes absolute (default)
@@ -48,18 +70,25 @@
 bool direction_x, direction_y, direction_z, direction_e;
 unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0;
 unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
-float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
+float destination_x = 0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 float x_interval, y_interval, z_interval, e_interval; // for speed delay
 float feedrate = 1500, next_feedrate;
 float time_for_move;
-long gcode_N, gcode_LastN;
+long gcode_N;
+long gcode_LastN = 0;
 bool relative_mode = false;  //Determines Absolute or Relative Coordinates
 bool relative_mode_e = true;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
 
 // comm variables
-#define MAX_CMD_SIZE 256
-char cmdbuffer[MAX_CMD_SIZE];
+//char cmdbuffer[MAX_CMD_SIZE];
+#define BUFSIZE 8
+char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
+bool fromsd[BUFSIZE];
+int bufindr=0;
+int bufindw=0;
+int buflen=0;
+int i=0;
 char serial_char;
 int serial_count = 0;
 boolean comment_mode = false;
@@ -80,8 +109,48 @@ int output;
 unsigned long previous_millis_cmd=0;
 unsigned long max_inactive_time = 0;
 
-void setup()
+boolean NotHome = true;
+#ifdef SDSUPPORT
+Sd2Card card;
+SdVolume volume;
+SdFile root;
+SdFile file;
+uint32_t filesize=0;
+uint32_t sdpos=0;
+bool sdmode=false;
+bool sdactive=false;
+int16_t n;
+
+
+void initsd(){
+sdactive=true;
+
+if (!card.init(SPI_FULL_SPEED)){
+    Serial.println("SD init 2nd attempt");
+    if (!card.init(SPI_FULL_SPEED))
+      Serial.println("SD init fail");
+      sdactive=false;
+}
+if (!volume.init(&card)){
+      Serial.println("volume.init failed");
+      sdactive=false;
+}
+if (!root.openRoot(&volume)){
+      Serial.println("openRoot failed");
+      sdactive=false;
+}
+//else 
+//        sdactive=true;
+
+}
+#endif
+
+void setup(void)
 { 
+  for(int i=0;i<BUFSIZE;i++){
+      fromsd[i]=false;
+  }
+
   //Initialize Step Pins
   if(X_STEP_PIN > -1) pinMode(X_STEP_PIN,OUTPUT);
   if(Y_STEP_PIN > -1) pinMode(Y_STEP_PIN,OUTPUT);
@@ -94,34 +163,41 @@ void setup()
   if(Z_DIR_PIN > -1) pinMode(Z_DIR_PIN,OUTPUT);
   if(E_DIR_PIN > -1) pinMode(E_DIR_PIN,OUTPUT);
 
-  //Steppers default to disabled.
-  if(X_ENABLE_PIN > -1) if(!X_ENABLE_ON) digitalWrite(X_ENABLE_PIN,HIGH);
-  if(Y_ENABLE_PIN > -1) if(!Y_ENABLE_ON) digitalWrite(Y_ENABLE_PIN,HIGH);
-  if(Z_ENABLE_PIN > -1) if(!Z_ENABLE_ON) digitalWrite(Z_ENABLE_PIN,HIGH);
-  if(E_ENABLE_PIN > -1) if(!E_ENABLE_ON) digitalWrite(E_ENABLE_PIN,HIGH);
-  
   //Initialize Enable Pins
   if(X_ENABLE_PIN > -1) pinMode(X_ENABLE_PIN,OUTPUT);
   if(Y_ENABLE_PIN > -1) pinMode(Y_ENABLE_PIN,OUTPUT);
   if(Z_ENABLE_PIN > -1) pinMode(Z_ENABLE_PIN,OUTPUT);
   if(E_ENABLE_PIN > -1) pinMode(E_ENABLE_PIN,OUTPUT);
 
+  //Steppers default to disabled.
+  if(X_ENABLE_PIN > -1) if(!X_ENABLE_ON) digitalWrite(X_ENABLE_PIN,HIGH);
+  if(Y_ENABLE_PIN > -1) if(!Y_ENABLE_ON) digitalWrite(Y_ENABLE_PIN,HIGH);
+  if(Z_ENABLE_PIN > -1) if(!Z_ENABLE_ON) digitalWrite(Z_ENABLE_PIN,HIGH);
+  if(E_ENABLE_PIN > -1) if(!E_ENABLE_ON) digitalWrite(E_ENABLE_PIN,HIGH);
+  
+
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
   
-//#ifdef REPSTRAP
+#ifdef THERMOCOUPLE
   pinMode(MAX6675_EN,OUTPUT);
   pinMode(MAX6675_SO,INPUT);
   pinMode(MAX6675_SCK,OUTPUT);
   pinMode(HEATER_1_PIN,OUTPUT);
   digitalWrite(MAX6675_EN,HIGH);
 
-//#endif  
+#endif  
 
   pinMode(TEMP_0_PIN,INPUT);
   //pinMode(TEMP_1_PIN,INPUT);
   
+  analogWrite(FAN_PIN,255);
   
   Serial.begin(BAUDRATE);
+
+#ifdef SDSUPPORT
+  initsd();
+#endif
+
   Serial.println("start");
   Serial.println("ok");
 }
@@ -129,47 +205,172 @@ void setup()
 
 void loop()
 {
-  get_command();
+if(buflen<3)
+	get_command();
+  
+  if(buflen){
+    //Serial.print("buflen: ");
+    //Serial.print(buflen);
+   //Serial.print(", bufindr: ");
+    //Serial.print(bufindr);
+  //Serial.print(", bufindw: ");
+    //Serial.println(bufindw);
+
+    process_commands();
+    
+    buflen=(buflen-1);
+    bufindr=(bufindr+1)%BUFSIZE;
+    //Serial.println("ok");
+    }
   manage_heaters();
-  manage_inactivity(1); //shutdown if not receiving any new commands
+  //manage_inactivity(1); //shutdown if not receiving any new commands
 }
 
 inline void get_command() 
 { 
-
-  if( Serial.available() > 0 ) {
-    serial_char = Serial.read();
+  while( Serial.available() > 0  && buflen<BUFSIZE) {
+    serial_char=Serial.read();
+//    if (serial_char >= 'a' && serial_char <= 'z') serial_char -= ('a' - 'A'); // make all commands upercase
     if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) ) 
     {
       if(!serial_count) return; //if empty line
-      cmdbuffer[serial_count] = 0; //terminate string
-      //Serial.print("Echo:");
-      //Serial.println(&cmdbuffer[0]);
-      
-      process_commands();
-      
+      cmdbuffer[bufindw][serial_count] = 0; //terminate string
+      //Serial.println(cmdbuffer[bufindw]);
+      if(!comment_mode){
+    fromsd[bufindw]=false;
+  if(strstr(cmdbuffer[bufindw], "N") != NULL)
+  {
+    strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
+    gcode_N = (strtol(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL, 10));
+    if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer[bufindw], "M110") == NULL) ) {
+    //if(gcode_N != gcode_LastN+1 && !code_seen("M110") ) {   //Hmm, compile size is different between using this vs the line above even though it should be the same thing. Keeping old method.
+      Serial.print("Serial Error: Line Number is not Last Line Number+1, Last Line:");
+      Serial.println(gcode_LastN);
+      Serial.println(gcode_N);
+      FlushSerialRequestResend();
+      serial_count = 0;
+      return;
+    }
+    
+    if(strstr(cmdbuffer[bufindw], "*") != NULL)
+    {
+      byte checksum = 0;
+      byte count=0;
+      while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
+      strchr_pointer = strchr(cmdbuffer[bufindw], '*');
+  
+      if( (int)(strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL)) != checksum) {
+        Serial.print("Error: checksum mismatch, Last Line:");
+        Serial.println(gcode_LastN);
+        FlushSerialRequestResend();
+        serial_count=0;
+        return;
+      }
+      //if no errors, continue parsing
+    }
+    else 
+    {
+      Serial.print("Error: No Checksum with line number, Last Line:");
+      Serial.println(gcode_LastN);
+      FlushSerialRequestResend();
+      serial_count=0;
+      return;
+    }
+    
+    gcode_LastN = gcode_N;
+    //if no errors, continue parsing
+  }
+  else  // if we don't receive 'N' but still see '*'
+  {
+    if((strstr(cmdbuffer[bufindw], "*") != NULL))
+    {
+      Serial.print("Error: No Line Number with checksum, Last Line:");
+      Serial.println(gcode_LastN);
+      serial_count=0;
+      return;
+    }
+  }
+	if((strstr(cmdbuffer[bufindw], "G") != NULL)){
+		strchr_pointer = strchr(cmdbuffer[bufindw], 'G');
+		switch((int)((strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL)))){
+		case 0:
+		case 1:
+			  Serial.println("ok"); 
+			  break;
+		default:
+			break;
+		}
+
+	}
+    
+    
+	
+        bufindw=(bufindw+1)%BUFSIZE;
+        buflen+=1;
+        //Serial.print("Received: ");
+        //Serial.println(gcode_LastN);
+        //Serial.print("Buflen: ");
+        //Serial.println(buflen);
+        
+      }
       comment_mode = false; //for new command
       serial_count = 0; //clear buffer
-      //Serial.println("ok"); 
     }
     else
     {
       if(serial_char == ';') comment_mode = true;
-      if(!comment_mode) cmdbuffer[serial_count++] = serial_char; 
+      if(!comment_mode) cmdbuffer[bufindw][serial_count++] = serial_char;
     }
-  }  
+  }
+#ifdef SDSUPPORT
+if(!sdmode || serial_count!=0){
+    return;
+}
+  while( filesize > sdpos  && buflen<BUFSIZE) {
+    n=file.read();
+    serial_char=(char)n;
+    if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) || n==-1) 
+    {
+        sdpos=file.curPosition();
+        if(sdpos>=filesize){
+            sdmode=false;
+            Serial.println("Done printing file");
+        }
+      if(!serial_count) return; //if empty line
+      cmdbuffer[bufindw][serial_count] = 0; //terminate string
+      //Serial.println(cmdbuffer[bufindw]);
+      if(!comment_mode){
+        fromsd[bufindw]=true;
+        buflen+=1;
+        //Serial.print("Received: ");
+         //   Serial.println(cmdbuffer[bufindw]);
+           // Serial.print("Buflen: ");
+            //Serial.println(buflen);
+        bufindw=(bufindw+1)%BUFSIZE;
+      }
+      comment_mode = false; //for new command
+      serial_count = 0; //clear buffer
+    }
+    else
+    {
+      if(serial_char == ';') comment_mode = true;
+      if(!comment_mode) cmdbuffer[bufindw][serial_count++] = serial_char;
+    }
+}
+#endif
+
 }
 
 
 //#define code_num (strtod(&cmdbuffer[strchr_pointer - cmdbuffer + 1], NULL))
 //inline void code_search(char code) { strchr_pointer = strchr(cmdbuffer, code); }
-inline float code_value() { return (strtod(&cmdbuffer[strchr_pointer - cmdbuffer + 1], NULL)); }
-inline long code_value_long() { return (strtol(&cmdbuffer[strchr_pointer - cmdbuffer + 1], NULL, 10)); }
-inline bool code_seen(char code_string[]) { return (strstr(cmdbuffer, code_string) != NULL); }  //Return True if the string was found
+inline float code_value() { return (strtod(&cmdbuffer[bufindr][strchr_pointer - cmdbuffer[bufindr] + 1], NULL)); }
+inline long code_value_long() { return (strtol(&cmdbuffer[bufindr][strchr_pointer - cmdbuffer[bufindr] + 1], NULL, 10)); }
+inline bool code_seen(char code_string[]) { return (strstr(cmdbuffer[bufindr], code_string) != NULL); }  //Return True if the string was found
 
 inline bool code_seen(char code)
 {
-  strchr_pointer = strchr(cmdbuffer, code);
+  strchr_pointer = strchr(cmdbuffer[bufindr], code);
   return (strchr_pointer != NULL);  //Return True if a character was found
 }
 
@@ -179,56 +380,23 @@ inline void process_commands()
 {
   unsigned long codenum; //throw away variable
   unsigned long previous_millis=0;
-  
-  if(code_seen('N'))
-  {
-    gcode_N = code_value_long();
-    if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer, "M110") == NULL) ) {
-      Serial.print("Serial Error: Line Number is not Last Line Number+1, Last Line:");
-      Serial.println(gcode_LastN);
-      FlushSerialRequestResend();
-      return;
-    }
-    
-    if(code_seen('*'))
-    {
-      byte checksum = 0;
-      byte count=0;
-      while(cmdbuffer[count] != '*') checksum = checksum^cmdbuffer[count++];
-     
-      if( (int)code_value() != checksum) {
-        Serial.print("Error: checksum mismatch, Last Line:");
-        Serial.println(gcode_LastN);
-        FlushSerialRequestResend();
-        return;
-      }
-      //if no errors, continue parsing
-    }else{
-      Serial.print("Error: No Checksum with line number, Last Line:");
-      Serial.println(gcode_LastN);
-      FlushSerialRequestResend();
-      return;
-    }
-    
-    gcode_LastN = gcode_N;
-    //if no errors, continue parsing
-  }
-  else  // if we don't receive 'N' but still see '*'
-  {
-    if(code_seen('*'))
-    {
-      Serial.print("Error: No Line Number with checksum, Last Line:");
-      Serial.println(gcode_LastN);
-      return;
-    }
-  }
-
-  //continues parsing only if we don't receive any 'N' or '*' or no errors if we do. :)
+  unsigned int oldFeed;
   if(code_seen('G'))
   {
     switch((int)code_value())
     {
       case 0: // G0 -> G1
+        get_coordinates(); // For X Y Z E F
+        oldFeed = feedrate;
+        if(code_seen('Z'))
+        {
+          feedrate = RAPID_Z;
+        }else{
+          feedrate = RAPID_XY;
+        }
+        pre_move(destination_x,destination_y,destination_z,destination_e);
+        feedrate = oldFeed;
+        break;        
       case 1: // G1
         get_coordinates(); // For X Y Z E F
         pre_move(destination_x,destination_y,destination_z,destination_e);
@@ -240,10 +408,12 @@ inline void process_commands()
         while((millis() - previous_millis) < codenum ) manage_heaters(); //manage heater until time is up
         break;
       case 28: // G28 - reference axes TODO
+        NotHome = true;
         reference_x();
         reference_y();
         reference_z();
         current_e = 0;
+        NotHome = false;
         break;
       case 90: // G90
         relative_mode = false;
@@ -252,10 +422,23 @@ inline void process_commands()
         relative_mode = true;
         break;
       case 92: // G92
-        if(code_seen('X')) current_x = code_value();
-        if(code_seen('Y')) current_y = code_value();
-        if(code_seen('Z')) current_z = code_value();
-        if(code_seen('E')) current_e = code_value();
+        if(code_seen('X')){
+          current_x = code_value();
+          break;
+        }
+        if(code_seen('Y')){
+          current_y = code_value();
+          break;
+        }
+        if(code_seen('Z')){
+          current_z = code_value();
+          break;
+        }
+        if(code_seen('E')){
+          current_e = code_value();
+          break;
+        }
+        current_x = current_y = current_z = current_e = 0;
         break;
         
     }
@@ -264,56 +447,181 @@ inline void process_commands()
     
     switch( (int)code_value() ) 
     {
+#ifdef SDSUPPORT
+        
+      case 20: // M20 - list SD card
+        Serial.println("Begin file list");
+        root.ls();
+        Serial.println("End file list");
+        break;
+      case 21: // M21 - init SD card
+        sdmode=false;
+        initsd();
+        break;
+      case 22: //M22 - release SD card
+        sdmode=false;
+        sdactive=false;
+        break;
+      case 23: //M23 - Select file
+        if(sdactive){
+            sdmode=false;
+            file.close();
+            if (file.open(&root, strchr_pointer+4, O_READ)) {
+                Serial.print("File opened:");
+                Serial.print(strchr_pointer+4);
+                Serial.print(" Size:");
+                Serial.println(file.fileSize());
+                sdpos=0;
+                filesize=file.fileSize();
+                //int i=0;
+                //while ((n = file.read(buf, sizeof(buf))) > 0) {
+                //    for (uint8_t i = 0; i < n; i++) Serial.print(buf[i]);
+                //}
+                Serial.println("File selected");
+                //file.close();
+            }
+            else{
+                Serial.println("file.open failed");
+            }
+        }
+        break;
+      case 223: //M223  - echo file contents
+            sdmode=false;
+            file.close();
+            if (file.open(&root, strchr_pointer+5, O_READ)) {
+              int16_t c;
+              while ((c = file.read()) > 0) Serial.print((char)c);
+            }
+        break;
+      case 24: //M24 - Start SD print
+        if(sdactive){
+            sdmode=true;
+        }
+        break;
+      case 25: //M25 - Pause SD print
+        if(sdmode){
+            sdmode=false;
+        }
+        break;
+      case 26: //M26 - Set SD index
+        if(sdactive && code_seen('S')){
+            sdpos=code_value_long();
+            file.seekSet(sdpos);
+        }
+        break;
+      case 27: //M27 - Get SD status
+        if(sdactive){
+            Serial.print("SD printing byte ");
+            Serial.print(sdpos);
+            Serial.print("/");
+            Serial.println(filesize);
+        }else{
+            Serial.println("Not SD printing");
+        }
+        break;
+#endif
       case 104: // M104 - set nozzle temp
-        if (code_seen('S')) nozzle_targ = code_value() * TEMP_MULTIPLIER;
+        if (code_seen('S'))
+         {
+#ifdef THERMOCOUPLE
+           nozzle_targ = code_value() * TEMP_MULTIPLIER;
+#else
+           nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
+#endif
+         }
         break;
       case 140: // M140 - set bed temp
-        if (code_seen('S')) bed_targ = code_value();
+        if (code_seen('S')) bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
         break;
       case 105: // M105 - report temps
+        Serial.print("T:");
+#ifdef THERMOCOUPLE
+#define NOZZLE_OUT nozzle_curr / TEMP_MULTIPLIER
+#else
+#define NOZZLE_OUT analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS)
+#endif
+        Serial.print( NOZZLE_OUT );
+        Serial.print(" B:");
+        Serial.println( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
+        break;
+      case 205:
+#ifdef THERMOCOUPLE
         Serial.print("Nc:");
         Serial.print( nozzle_curr / TEMP_MULTIPLIER );
         Serial.print(" Nh:");
         Serial.print( output );
         Serial.print(" Nt:");
         Serial.print( nozzle_targ / TEMP_MULTIPLIER );
+#else
+        Serial.print("Nc:");
+        Serial.print( analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS) );
+        Serial.print(" Nh:");
+        Serial.print( output );
+        Serial.print(" Nt:");
+        Serial.print( analog2temp(nozzle_targ, _thNTempTable, nNUMTEMPS) );
+#endif
         Serial.print(" Bc:");
-        Serial.println( bed_curr ); 
+        Serial.println( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
         Serial.print(" Bt:");
-        Serial.println( bed_targ ); 
-        //if(!code_seen('N')) return;  // If M105 is sent from generated gcode, then it needs a response.
+        Serial.println( analog2temp(bed_targ, _thTempTable, bNUMTEMPS) ); 
         break;
-      case 205:
+      case 905:
+#ifndef THERMOCOUPLE
+        Serial.print("Ta: ");
+        Serial.print(analogRead(TEMP_1_PIN));
+#endif        
+        Serial.print(" Tb: ");
         Serial.println(analogRead(TEMP_0_PIN));
         break;
       case 109: // M109 - Wait for nozzle to reach target temp
         if (code_seen('S'))
         {
+#ifdef THERMOCOUPLE
           nozzle_targ = code_value() * TEMP_MULTIPLIER;
           previous_millis = millis(); 
-          while(nozzle_curr < nozzle_targ)
+          while(nozzle_curr < (nozzle_targ - NZONE * TEMP_MULTIPLIER))
           {
             if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
             {
-              Serial.print("Nozzle CURR:");
-              Serial.println( nozzle_curr / TEMP_MULTIPLIER ); 
+              Serial.print("T:");
+              Serial.print( nozzle_curr / TEMP_MULTIPLIER ); 
+              Serial.print(" / ");
+              Serial.println( nozzle_targ / TEMP_MULTIPLIER ); 
               previous_millis = millis(); 
             }
             manage_heaters();
           }
+#else
+          nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
+          previous_millis = millis(); 
+          while(nozzle_curr < (nozzle_targ - NZONE))
+          {
+            if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
+            {
+              Serial.print("T:");
+              Serial.print( analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS) ); 
+              Serial.print(" / ");
+              Serial.println( analog2temp(nozzle_targ, _thNTempTable, nNUMTEMPS) ); 
+              previous_millis = millis(); 
+            }
+            manage_heaters();
+          }
+#endif
         }
         break;
       case 141: // M141 - Wait for bed to reach target temp
         if (code_seen('S'))
          {
-           bed_targ = code_value();
+           bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
            previous_millis = millis(); 
            while(bed_curr < bed_targ)
            {
              if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
              {
-               Serial.print("Bed CURR:");
-               Serial.println( bed_curr ); 
+               Serial.print("B:");
+               Serial.print( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
+               Serial.print(" / ");
+               Serial.println( analog2temp(bed_targ, _thTempTable, bNUMTEMPS) ); 
                previous_millis = millis(); 
              }
              manage_heaters();
@@ -346,6 +654,12 @@ inline void process_commands()
         disable_y();
         disable_z();
         disable_e();
+        break;
+      case 184:
+        enable_x();
+        enable_y();
+        enable_z();
+        enable_e();
         break;
       case 85: // M85
         code_seen('S');
@@ -380,8 +694,8 @@ inline void process_commands()
       get_coordinates(); // For X Y Z E F
       pre_move(destination_x,destination_y,destination_z,destination_e);
     }else{
-      Serial.print( 'Unknown command at line: ' );
-      Serial.println( gcode_LastN );
+      Serial.print( 'Unknown command: ' );
+      Serial.println( cmdbuffer[bufindr] );
     }
   }
   
@@ -422,10 +736,10 @@ inline void reference_z()
 }
 inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
 {
-  int x_steps=0;
-  int y_steps=0;
+  unsigned long x_steps=0;
+  unsigned long y_steps=0;
   unsigned long z_steps=0;
-  int e_steps=0;
+  unsigned long e_steps=0;
   
           x_steps_to_take = abs(dest_x - current_x)*x_steps_per_unit;
           y_steps_to_take = abs(dest_y - current_y)*y_steps_per_unit;
@@ -502,11 +816,16 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
   if(z_steps_to_take) enable_z();
   if(e_steps_to_take) enable_e();
 
-  if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_to_take=0;
-  if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
-  if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
+  if(NotHome)
+  {
+    if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_to_take=0;
+    if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
+    if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
+  }
   
-  //while(x_steps_remaining > 0 || y_steps_remaining > 0 || z_steps_remaining > 0 || e_steps_remaining > 0) // move until no more steps remain
+  //synchronise all axes
+  previous_micros_x = previous_micros_y = previous_micros_z = previous_micros_e = micros();
+  
   while(x_steps_to_take + y_steps_to_take + z_steps_to_take + e_steps_to_take > 0) // move until no more steps remain
   { 
     if(x_steps_to_take)
@@ -517,13 +836,7 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
         x_steps_to_take--;
         x_steps++;
       }
-      if(!direction_x)
-      {
-        if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING)
-        {
-          x_steps_to_take=0;
-        }
-      }
+      if(!direction_x && NotHome) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_to_take=0;
     }
     
     if(y_steps_to_take)
@@ -534,7 +847,7 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
         y_steps_to_take--;
         y_steps++;
       }
-      if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
+      if(!direction_y && NotHome) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_to_take=0;
     }
     
     if(z_steps_to_take)
@@ -545,7 +858,7 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
         z_steps_to_take--;
         z_steps++;
       }
-      if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
+      if(!direction_z && NotHome) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_to_take=0;
     }    
     
     if(e_steps_to_take)
@@ -584,16 +897,20 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
 }
 inline void FlushSerialRequestResend()
 {
-  char cmdbuffer[100]="Resend:";
-  ltoa(gcode_LastN+1, cmdbuffer+7, 10);
+  //char cmdbuffer[bufindr][100]="Resend:";
   Serial.flush();
-  Serial.println(cmdbuffer);
+  Serial.print("Resend:");
+  Serial.println(gcode_LastN+1);
   ClearToSend();
 }
 
 inline void ClearToSend()
 {
   previous_millis_cmd = millis();
+  #ifdef SDSUPPORT
+  if(fromsd[bufindr])
+    return;
+  #endif
   Serial.println("ok"); 
 }
 
@@ -623,7 +940,7 @@ inline void get_coordinates()
   else direction_e=0;
 */
   
-  if (min_software_endstops) {
+  if (min_software_endstops && !NotHome) {
     if (destination_x < 0) destination_x = 0.0;
     if (destination_y < 0) destination_y = 0.0;
     if (destination_z < 0) destination_z = 0.0;
@@ -634,8 +951,11 @@ inline void get_coordinates()
     if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
     if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
   }
-  
-  if(feedrate > max_feedrate) feedrate = max_feedrate;
+  if(code_seen('Z')) {
+    feedrate = min(feedrate,RAPID_Z);
+  }else{
+    feedrate = min(feedrate,RAPID_XY);
+  }
 }
 
 /*void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
@@ -703,11 +1023,12 @@ void manage_nozzle()
     int temp_iState_min = -PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     int temp_iState_max = PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     
-//#ifdef REPSTRAP
+#ifdef THERMOCOUPLE
     tcTemperature();
-//#else
-//    nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN);
-//#endif
+#else
+    //nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
+    nozzle_curr = 1023 - analogRead(TEMP_1_PIN);
+#endif
 
     // code for PID control
     error = nozzle_targ - nozzle_curr;
@@ -731,7 +1052,8 @@ void manage_bed()
     int prev_curr = bed_curr;
     int zone;
     // code for thermistor bang-bang control
-    bed_curr = thTemperature(_thTempTable, TEMP_0_PIN);
+    //bed_curr = thTemperature(_thTempTable, TEMP_0_PIN, bNUMTEMPS);
+    bed_curr = 1023 - analogRead(TEMP_0_PIN);
     if(bed_curr >= prev_curr)
     {
       zone = bed_targ - LZONE;
@@ -761,7 +1083,7 @@ void manage_bed()
   }
 */
 }
-int thTemperature(short table[][2], int temp_pin)
+/*int thTemperature(short table[][2], int temp_pin, int numtemps)
 {
   int raw = analogRead(temp_pin);
   int curr=0;
@@ -769,7 +1091,7 @@ int thTemperature(short table[][2], int temp_pin)
 
   // TODO: This should do a binary chop
 
-  for (i=1; i<NUMTEMPS; i++)
+  for (i=1; i<numtemps; i++)
   {
     if (table[i][0] > raw)
     {
@@ -782,14 +1104,14 @@ int thTemperature(short table[][2], int temp_pin)
   }
 
   // Overflow: Set to last value in the table
-  if (i >= NUMTEMPS) curr = table[i-1][1];
+  if (i >= numtemps) curr = table[i-1][1];
   // Clamp to byte
   //if (celsius > 255) celsius = 255; 
   //else if (celsius < 0) celsius = 0; 
   return curr;
 }
-
-//#ifdef REPSTRAP
+*/
+#ifdef THERMOCOUPLE
 void tcTemperature()
 {
   int value = 0;
@@ -826,66 +1148,59 @@ void tcTemperature()
   }
 
 }
-//#endif
+#endif
 // Takes temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
-/*float temp2analog(int celsius) {
-  if(USE_THERMISTOR) {
+float temp2analog(int celsius, short table[][2], int numtemps) {
     int raw = 0;
     byte i;
     
-    for (i=1; i<NUMTEMPS; i++)
+    for (i=1; i<numtemps; i++)
     {
-      if (_temptable[i][1] < celsius)
+      if (table[i][1] < celsius)
       {
-        raw = _temptable[i-1][0] + 
-          (celsius - _temptable[i-1][1]) * 
-          (_temptable[i][0] - _temptable[i-1][0]) /
-          (_temptable[i][1] - _temptable[i-1][1]);
+        raw = table[i-1][0] + 
+          (celsius - table[i-1][1]) * 
+          (table[i][0] - table[i-1][0]) /
+          (table[i][1] - table[i-1][1]);
       
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == NUMTEMPS) raw = _temptable[i-1][0];
+    if (i == numtemps) raw = table[i-1][0];
 
     return 1023 - raw;
-  } else {
-    return celsius * (1024.0/(5.0*100.0));
-  }
 }
 
 // Derived from RepRap FiveD extruder::getTemperature()
-float analog2temp(int raw) {
-  if(USE_THERMISTOR) {
+float analog2temp(int raw, short table[][2], int numtemps) {
     int celsius = 0;
     byte i;
+    int raw_ = 1023 - raw;
 
-    for (i=1; i<NUMTEMPS; i++)
+    for (i=1; i<numtemps; i++)
     {
-      if (_temptable[i][0] > raw)
+      if (table[i][0] > raw_)
       {
-        celsius  = _temptable[i-1][1] + 
-          (raw - _temptable[i-1][0]) * 
-          (_temptable[i][1] - _temptable[i-1][1]) /
-          (_temptable[i][0] - _temptable[i-1][0]);
+        celsius  = table[i-1][1] + 
+          (raw_ - table[i-1][0]) * 
+          (table[i][1] - table[i-1][1]) /
+          (table[i][0] - table[i-1][0]);
 
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == NUMTEMPS) celsius = _temptable[i-1][1];
+    if (i == numtemps) celsius = table[i-1][1];
 
     return celsius;
     
-  } else {
-    return raw * ((5.0*100.0)/1024.0);
-  }
 }
-*/
+
 inline void kill(byte debug)
 {
   if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
