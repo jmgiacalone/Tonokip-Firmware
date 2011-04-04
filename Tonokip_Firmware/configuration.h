@@ -22,7 +22,7 @@ const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 float x_steps_per_unit = 80;
 float y_steps_per_unit = 80;
 float z_steps_per_unit = 4571.43;
-float e_steps_per_unit = 65.304; //754.91424; //65.304; //set for sf40=65.304*11.56
+float e_steps_per_unit = 724.022; //65.304; //set for sf40 TO 0.85*measured filament feed
 int max_feedrate = 6000;
 #define RAPID_Z 500
 #define RAPID_XY 6000
@@ -69,7 +69,7 @@ const int Z_MAX_LENGTH = 100;
 //RESISTOR 12 OHM
 #define PID_MAX 255 // limits current to nozzle
 #define PID_INTEGRAL_DRIVE_MAX 220 //200
-#define PID_PGAIN 2.0 //1.8
+#define PID_PGAIN 1.8 //1.8
 #define PID_IGAIN 0.02//0.02
 #define PID_DGAIN 1.0//1.0
 

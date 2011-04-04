@@ -93,6 +93,9 @@ char serial_char;
 int serial_count = 0;
 boolean comment_mode = false;
 char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
+int cmdStartpos=0;
+int cmdEndpos=0;
+char prnt[255]={0};
 
 //manage heater variables
 int bed_targ = 0;
@@ -120,7 +123,7 @@ uint32_t sdpos=0;
 bool sdmode=false;
 bool sdactive=false;
 int16_t n;
-
+bool saveToSD=false;
 
 void initsd(){
 sdactive=true;
@@ -228,6 +231,8 @@ if(buflen<3)
 
 inline void get_command() 
 { 
+  char cmnds[]={'M','G','X','Y','Z','E','F'};
+  int npos=0;
   while( Serial.available() > 0  && buflen<BUFSIZE) {
     serial_char=Serial.read();
 //    if (serial_char >= 'a' && serial_char <= 'z') serial_char -= ('a' - 'A'); // make all commands upercase
@@ -235,98 +240,110 @@ inline void get_command()
     {
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
+      cmdStartpos = 0;
+      cmdEndpos = strlen(cmdbuffer[bufindw]);
       //Serial.println(cmdbuffer[bufindw]);
       if(!comment_mode){
-    fromsd[bufindw]=false;
-  if(strstr(cmdbuffer[bufindw], "N") != NULL)
-  {
-    strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
-    gcode_N = (strtol(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL, 10));
-    if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer[bufindw], "M110") == NULL) ) {
-    //if(gcode_N != gcode_LastN+1 && !code_seen("M110") ) {   //Hmm, compile size is different between using this vs the line above even though it should be the same thing. Keeping old method.
-      Serial.print("Serial Error: Line Number is not Last Line Number+1, Last Line:");
-      Serial.println(gcode_LastN);
-      Serial.println(gcode_N);
-      FlushSerialRequestResend();
-      serial_count = 0;
-      return;
-    }
+        fromsd[bufindw]=false;
+        npos = strchr(cmdbuffer[bufindw], 'N') - cmdbuffer[bufindw];
+        //if(strstr(cmdbuffer[bufindw], "N") != NULL)
+        if(npos == 1 || npos == 0)
+        {
+          strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
+          //cmdStartpos = strpbrk(cmdbuffer[bufindw], cmnds) - cmdbuffer[bufindw];
+          cmdStartpos = strchr(cmdbuffer[bufindw]+2, ' ') - cmdbuffer[bufindw] + 1;
+          gcode_N = (strtol(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL, 10));
+          if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer[bufindw], "M110") == NULL) )
+          {
+            Serial.print("Serial Error: Line Number is not Last Line Number+1, Last Line:");
+            Serial.println(gcode_LastN);
+            Serial.println(gcode_N);
+            FlushSerialRequestResend();
+            serial_count = 0;
+            return;
+          }
     
-    if(strstr(cmdbuffer[bufindw], "*") != NULL)
-    {
-      byte checksum = 0;
-      byte count=0;
-      while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
-      strchr_pointer = strchr(cmdbuffer[bufindw], '*');
-  
-      if( (int)(strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL)) != checksum) {
-        Serial.print("Error: checksum mismatch, Last Line:");
-        Serial.println(gcode_LastN);
-        FlushSerialRequestResend();
-        serial_count=0;
-        return;
+        if(strstr(cmdbuffer[bufindw], "*") != NULL)
+        {
+          byte checksum = 0;
+          byte count=0;
+          while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
+          strchr_pointer = strchr(cmdbuffer[bufindw], '*');
+          cmdEndpos = strlen(cmdbuffer[bufindw])-(strchr_pointer - cmdbuffer[bufindw]);
+          if( (int)(strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL)) != checksum)
+          {
+            Serial.print("Error: checksum mismatch, Last Line:");
+            Serial.println(gcode_LastN);
+            FlushSerialRequestResend();
+            serial_count=0;
+            return;
+          }
+          //if no errors, continue parsing
+        }else{
+          Serial.print("Error: No Checksum with line number, Last Line:");
+          Serial.println(gcode_LastN);
+          FlushSerialRequestResend();
+          serial_count=0;
+          return;
+        }
+        gcode_LastN = gcode_N;
+        //truncate line to remove Nn and *n
+        /*Serial.print("cmdbuffer[bufindw]:");
+        Serial.println(cmdbuffer[bufindw]);
+        Serial.print("cmdStartpos:");
+        Serial.println(cmdStartpos);
+        Serial.print("cmdEndpos:");
+        Serial.println(cmdEndpos);
+        Serial.print("strlen(cmdbuffer[bufindw]):");
+        Serial.println(strlen(cmdbuffer[bufindw]));*/
+        strncpy(cmdbuffer[bufindw],cmdbuffer[bufindw]+cmdStartpos, strlen(cmdbuffer[bufindw]) - cmdStartpos - cmdEndpos);
+        cmdbuffer[bufindw][strlen(cmdbuffer[bufindw]) - cmdStartpos - cmdEndpos - 1]=0;
+        //Serial.println(cmdbuffer[bufindw]);
+        //if no errors, continue parsing
+      // if we don't receive 'N' but still see '*'
+      }else{
+        if((strstr(cmdbuffer[bufindw], "*") != NULL))
+        {
+          Serial.print("Error: No Line Number with checksum, Last Line:");
+          Serial.println(gcode_LastN);
+          serial_count=0;
+          return;
+        }
       }
-      //if no errors, continue parsing
-    }
-    else 
-    {
-      Serial.print("Error: No Checksum with line number, Last Line:");
-      Serial.println(gcode_LastN);
-      FlushSerialRequestResend();
-      serial_count=0;
-      return;
-    }
-    
-    gcode_LastN = gcode_N;
-    //if no errors, continue parsing
-  }
-  else  // if we don't receive 'N' but still see '*'
-  {
-    if((strstr(cmdbuffer[bufindw], "*") != NULL))
-    {
-      Serial.print("Error: No Line Number with checksum, Last Line:");
-      Serial.println(gcode_LastN);
-      serial_count=0;
-      return;
-    }
-  }
-	if((strstr(cmdbuffer[bufindw], "G") != NULL)){
-		strchr_pointer = strchr(cmdbuffer[bufindw], 'G');
-		switch((int)((strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL)))){
-		case 0:
-		case 1:
-			  Serial.println("ok"); 
-			  break;
-		default:
-			break;
-		}
-
-	}
-    
-    
-	
-        bufindw=(bufindw+1)%BUFSIZE;
-        buflen+=1;
-        //Serial.print("Received: ");
-        //Serial.println(gcode_LastN);
-        //Serial.print("Buflen: ");
-        //Serial.println(buflen);
-        
+      if((strstr(cmdbuffer[bufindw], "G") != NULL))
+      {
+        strchr_pointer = strchr(cmdbuffer[bufindw], 'G');
+	switch((int)((strtod(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL))))
+        {
+          case 0:
+          case 1:
+	    Serial.println("ok"); 
+	    break;
+          default:
+            break;
+        }
       }
-      comment_mode = false; //for new command
-      serial_count = 0; //clear buffer
+      bufindw=(bufindw+1)%BUFSIZE;
+      buflen+=1;
+      //Serial.print("Received: ");
+      //Serial.println(gcode_LastN);
+      //Serial.print("Buflen: ");
+      //Serial.println(buflen);
     }
-    else
-    {
+    comment_mode = false; //for new command
+    serial_count = 0; //clear buffer
+    }else{
       if(serial_char == ';') comment_mode = true;
       if(!comment_mode) cmdbuffer[bufindw][serial_count++] = serial_char;
     }
   }
 #ifdef SDSUPPORT
-if(!sdmode || serial_count!=0){
+  if(!sdmode || serial_count!=0)
+  {
     return;
-}
-  while( filesize > sdpos  && buflen<BUFSIZE) {
+  }
+  while( filesize > sdpos  && buflen<BUFSIZE)
+  {
     n=file.read();
     serial_char=(char)n;
     if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) || n==-1) 
@@ -346,7 +363,7 @@ if(!sdmode || serial_count!=0){
          //   Serial.println(cmdbuffer[bufindw]);
            // Serial.print("Buflen: ");
             //Serial.println(buflen);
-        bufindw=(bufindw+1)%BUFSIZE;
+          bufindw=(bufindw+1)%BUFSIZE;
       }
       comment_mode = false; //for new command
       serial_count = 0; //clear buffer
@@ -367,20 +384,44 @@ if(!sdmode || serial_count!=0){
 inline float code_value() { return (strtod(&cmdbuffer[bufindr][strchr_pointer - cmdbuffer[bufindr] + 1], NULL)); }
 inline long code_value_long() { return (strtol(&cmdbuffer[bufindr][strchr_pointer - cmdbuffer[bufindr] + 1], NULL, 10)); }
 inline bool code_seen(char code_string[]) { return (strstr(cmdbuffer[bufindr], code_string) != NULL); }  //Return True if the string was found
-
 inline bool code_seen(char code)
 {
   strchr_pointer = strchr(cmdbuffer[bufindr], code);
   return (strchr_pointer != NULL);  //Return True if a character was found
 }
 
+inline void write_commands()
+{
+  //char writeBuf[MAX_CMD_SIZE]={0};
+  //Serial.println("in write_commands");
+  //append a line to the file
+  file.writeError = false;
+  //strncpy(cmdbuffer[bufindr],cmdbuffer[bufindr],strlen(cmdbuffer[bufindr]) - 1);
+  strcat(cmdbuffer[bufindr], "\r\n");
+  //Serial.print("writing:");
+  //Serial.print(cmdbuffer[bufindr]);
+  file.print(cmdbuffer[bufindr]);
 
+  // check for errors
+  if (file.writeError)
+  {
+    Serial.print("File write error: ");
+    Serial.println(cmdbuffer[bufindr]);
+  }  
+}
 
 inline void process_commands()
 {
   unsigned long codenum; //throw away variable
   unsigned long previous_millis=0;
   unsigned int oldFeed;
+  //char writeBuf[MAX_CMD_SIZE]={0};
+  if(saveToSD && strstr(cmdbuffer[bufindr], "M29") == NULL)
+  {
+    write_commands();
+    ClearToSend();
+    return;
+  }
   if(code_seen('G'))
   {
     switch((int)code_value())
@@ -462,7 +503,7 @@ inline void process_commands()
         sdmode=false;
         sdactive=false;
         break;
-      case 23: //M23 - Select file
+      case 23: //M23 - Select file for reading from card
         if(sdactive){
             sdmode=false;
             file.close();
@@ -470,14 +511,14 @@ inline void process_commands()
                 Serial.print("File opened:");
                 Serial.print(strchr_pointer+4);
                 Serial.print(" Size:");
-                Serial.println(file.fileSize());
-                sdpos=0;
                 filesize=file.fileSize();
+                Serial.println(filesize);
+                sdpos=0;
                 //int i=0;
                 //while ((n = file.read(buf, sizeof(buf))) > 0) {
                 //    for (uint8_t i = 0; i < n; i++) Serial.print(buf[i]);
                 //}
-                Serial.println("File selected");
+                //Serial.println("File selected");
                 //file.close();
             }
             else{
@@ -492,6 +533,7 @@ inline void process_commands()
               int16_t c;
               while ((c = file.read()) > 0) Serial.print((char)c);
             }
+            Serial.println("End of file reached.");
         break;
       case 24: //M24 - Start SD print
         if(sdactive){
@@ -518,6 +560,40 @@ inline void process_commands()
         }else{
             Serial.println("Not SD printing");
         }
+        break;
+      case 28: //M28 open file for writing to card  
+        // create or open a file for append
+          Serial.print("cmdStartpos:");
+          Serial.println(cmdStartpos);
+          Serial.print("cmdEndpos:");
+          Serial.println(cmdEndpos);
+        //strncpy(writeBuf,cmdbuffer[bufindr]+cmdStartpos+4,strlen(cmdbuffer[bufindr]) - cmdEndpos);
+        //strncpy(writeBuf,cmdbuffer[bufindr]+cmdStartpos+4,strlen(cmdbuffer[bufindr])-cmdStartpos-4);
+        //strncpy(writeBuf,writeBuf,strlen(writeBuf) - cmdEndpos);
+        //strcat(writeBuf, "\0");
+        //if (!file.open(&root, writeBuf, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
+        if (!file.open(&root, cmdbuffer[bufindr]+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
+        {
+          Serial.print("open failed, File:");
+          Serial.print(cmdbuffer[bufindr]+4);
+          Serial.print(".");
+        }else{
+          saveToSD = true;
+          Serial.print("File opened:");
+          Serial.println(cmdbuffer[bufindr]+4);
+        }
+        break;
+      case 29: //M29 end writing to file
+        if (!file.close())
+        {
+          Serial.println("close failed");
+        }else{
+          saveToSD = false;
+          Serial.println("File closed.");
+        }
+        break;
+      case 229: //M229 delete file
+        
         break;
 #endif
       case 104: // M104 - set nozzle temp
@@ -698,7 +774,6 @@ inline void process_commands()
       Serial.println( cmdbuffer[bufindr] );
     }
   }
-  
   ClearToSend();
 }
 
