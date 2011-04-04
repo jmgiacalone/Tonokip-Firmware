@@ -95,7 +95,7 @@ boolean comment_mode = false;
 char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
 int cmdStartpos=0;
 int cmdEndpos=0;
-char prnt[255]={0};
+//char prnt[255]={0};
 
 //manage heater variables
 int bed_targ = 0;
@@ -165,6 +165,11 @@ void setup(void)
   if(Y_DIR_PIN > -1) pinMode(Y_DIR_PIN,OUTPUT);
   if(Z_DIR_PIN > -1) pinMode(Z_DIR_PIN,OUTPUT);
   if(E_DIR_PIN > -1) pinMode(E_DIR_PIN,OUTPUT);
+//Steppers default to disabled.
+  if(X_ENABLE_PIN > -1) if(!X_ENABLE_ON) digitalWrite(X_ENABLE_PIN,HIGH);
+  if(Y_ENABLE_PIN > -1) if(!Y_ENABLE_ON) digitalWrite(Y_ENABLE_PIN,HIGH);
+  if(Z_ENABLE_PIN > -1) if(!Z_ENABLE_ON) digitalWrite(Z_ENABLE_PIN,HIGH);
+  if(E_ENABLE_PIN > -1) if(!E_ENABLE_ON) digitalWrite(E_ENABLE_PIN,HIGH);
 
   //Initialize Enable Pins
   if(X_ENABLE_PIN > -1) pinMode(X_ENABLE_PIN,OUTPUT);
@@ -172,12 +177,7 @@ void setup(void)
   if(Z_ENABLE_PIN > -1) pinMode(Z_ENABLE_PIN,OUTPUT);
   if(E_ENABLE_PIN > -1) pinMode(E_ENABLE_PIN,OUTPUT);
 
-  //Steppers default to disabled.
-  if(X_ENABLE_PIN > -1) if(!X_ENABLE_ON) digitalWrite(X_ENABLE_PIN,HIGH);
-  if(Y_ENABLE_PIN > -1) if(!Y_ENABLE_ON) digitalWrite(Y_ENABLE_PIN,HIGH);
-  if(Z_ENABLE_PIN > -1) if(!Z_ENABLE_ON) digitalWrite(Z_ENABLE_PIN,HIGH);
-  if(E_ENABLE_PIN > -1) if(!E_ENABLE_ON) digitalWrite(E_ENABLE_PIN,HIGH);
-  
+    
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
   
@@ -231,7 +231,7 @@ if(buflen<3)
 
 inline void get_command() 
 { 
-  char cmnds[]={'M','G','X','Y','Z','E','F'};
+  //char cmnds[]={'M','G','X','Y','Z','E','F'};
   int npos=0;
   while( Serial.available() > 0  && buflen<BUFSIZE) {
     serial_char=Serial.read();
@@ -338,12 +338,10 @@ inline void get_command()
     }
   }
 #ifdef SDSUPPORT
-  if(!sdmode || serial_count!=0)
-  {
+  if(!sdmode || serial_count!=0){
     return;
   }
-  while( filesize > sdpos  && buflen<BUFSIZE)
-  {
+  while( filesize > sdpos  && buflen<BUFSIZE){
     n=file.read();
     serial_char=(char)n;
     if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) || n==-1) 
@@ -435,12 +433,12 @@ inline void process_commands()
         }else{
           feedrate = RAPID_XY;
         }
-        pre_move(destination_x,destination_y,destination_z,destination_e);
+        linear_move(destination_x,destination_y,destination_z,destination_e);
         feedrate = oldFeed;
         break;        
       case 1: // G1
         get_coordinates(); // For X Y Z E F
-        pre_move(destination_x,destination_y,destination_z,destination_e);
+        linear_move(destination_x,destination_y,destination_z,destination_e);
       case 4: // G4 dwell
         codenum = 0;
         if(code_seen('P')) codenum = code_value(); // milliseconds to wait
@@ -768,7 +766,7 @@ inline void process_commands()
     if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
     {
       get_coordinates(); // For X Y Z E F
-      pre_move(destination_x,destination_y,destination_z,destination_e);
+      linear_move(destination_x,destination_y,destination_z,destination_e);
     }else{
       Serial.print( 'Unknown command: ' );
       Serial.println( cmdbuffer[bufindr] );
@@ -780,36 +778,99 @@ inline void process_commands()
 inline void reference_x()
 {
         feedrate = 1000;
-        pre_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
+        linear_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
         current_x = 0;
-        pre_move(1, current_y, current_z, current_e);
+        linear_move(1, current_y, current_z, current_e);
         feedrate = 100;
-        pre_move(-1, current_y, current_z, current_e);
+        linear_move(-1, current_y, current_z, current_e);
         current_x = 0;
         feedrate = 1500;
 }
 inline void reference_y()
 {
         feedrate = 1000;
-        pre_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
+        linear_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
         current_y = 0;
-        pre_move(current_x, 1, current_z, current_e);
+        linear_move(current_x, 1, current_z, current_e);
         feedrate = 100;
-        pre_move(current_x, -1, current_z, current_e);
+        linear_move(current_x, -1, current_z, current_e);
         current_y = 0;
         feedrate = 1500;
 }
 inline void reference_z()
 {
         feedrate = 100;
-        pre_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
+        linear_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
         current_z = 0;
-        pre_move(current_x, current_y, 1, current_e);
-        pre_move(current_x, current_y, -1, current_e);
+        linear_move(current_x, current_y, 1, current_e);
+        linear_move(current_x, current_y, -1, current_e);
         current_z = 0;
         feedrate = 1500;
 }
-inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
+inline void FlushSerialRequestResend()
+{
+  //char cmdbuffer[bufindr][100]="Resend:";
+  Serial.flush();
+  Serial.print("Resend:");
+  Serial.println(gcode_LastN+1);
+  ClearToSend();
+}
+
+inline void ClearToSend()
+{
+  previous_millis_cmd = millis();
+  #ifdef SDSUPPORT
+  if(fromsd[bufindr])
+    return;
+  #endif
+  Serial.println("ok"); 
+}
+
+inline void get_coordinates()
+{
+  if(code_seen('X')) destination_x = (float)code_value() + relative_mode*current_x;
+  else destination_x = current_x;                                                       //Are these else lines really needed?
+  if(code_seen('Y')) destination_y = (float)code_value() + relative_mode*current_y;
+  else destination_y = current_y;
+  if(code_seen('Z')) destination_z = (float)code_value() + relative_mode*current_z;
+  else destination_z = current_z;
+  if(code_seen('E')) destination_e = (float)code_value() + (relative_mode_e || relative_mode)*current_e;
+  else destination_e = current_e;
+  if(code_seen('F')) {
+    next_feedrate = code_value();
+    if(next_feedrate > 0.0) feedrate = next_feedrate;
+  }
+  
+/*  //Find direction
+  if(destination_x >= current_x) direction_x=1;
+  else direction_x=0;
+  if(destination_y >= current_y) direction_y=1;
+  else direction_y=0;
+  if(destination_z >= current_z) direction_z=1;
+  else direction_z=0;
+  if(destination_e >= current_e) direction_e=1;
+  else direction_e=0;
+*/
+  
+  if (min_software_endstops && !NotHome) {
+    if (destination_x < 0) destination_x = 0.0;
+    if (destination_y < 0) destination_y = 0.0;
+    if (destination_z < 0) destination_z = 0.0;
+  }
+
+  if (max_software_endstops) {
+    if (destination_x > X_MAX_LENGTH) destination_x = X_MAX_LENGTH;
+    if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
+    if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
+  }
+  if(code_seen('Z')) {
+    feedrate = min(feedrate,RAPID_Z);
+  }else{
+    feedrate = min(feedrate,RAPID_XY);
+  }
+}
+
+void linear_move(float dest_x, float dest_y, float dest_z, float dest_e)
 {
   unsigned long x_steps=0;
   unsigned long y_steps=0;
@@ -970,73 +1031,6 @@ inline void pre_move(float dest_x, float dest_y, float dest_z, float dest_e)
           
   return;
 }
-inline void FlushSerialRequestResend()
-{
-  //char cmdbuffer[bufindr][100]="Resend:";
-  Serial.flush();
-  Serial.print("Resend:");
-  Serial.println(gcode_LastN+1);
-  ClearToSend();
-}
-
-inline void ClearToSend()
-{
-  previous_millis_cmd = millis();
-  #ifdef SDSUPPORT
-  if(fromsd[bufindr])
-    return;
-  #endif
-  Serial.println("ok"); 
-}
-
-inline void get_coordinates()
-{
-  if(code_seen('X')) destination_x = (float)code_value() + relative_mode*current_x;
-  else destination_x = current_x;                                                       //Are these else lines really needed?
-  if(code_seen('Y')) destination_y = (float)code_value() + relative_mode*current_y;
-  else destination_y = current_y;
-  if(code_seen('Z')) destination_z = (float)code_value() + relative_mode*current_z;
-  else destination_z = current_z;
-  if(code_seen('E')) destination_e = (float)code_value() + (relative_mode_e || relative_mode)*current_e;
-  else destination_e = current_e;
-  if(code_seen('F')) {
-    next_feedrate = code_value();
-    if(next_feedrate > 0.0) feedrate = next_feedrate;
-  }
-  
-/*  //Find direction
-  if(destination_x >= current_x) direction_x=1;
-  else direction_x=0;
-  if(destination_y >= current_y) direction_y=1;
-  else direction_y=0;
-  if(destination_z >= current_z) direction_z=1;
-  else direction_z=0;
-  if(destination_e >= current_e) direction_e=1;
-  else direction_e=0;
-*/
-  
-  if (min_software_endstops && !NotHome) {
-    if (destination_x < 0) destination_x = 0.0;
-    if (destination_y < 0) destination_y = 0.0;
-    if (destination_z < 0) destination_z = 0.0;
-  }
-
-  if (max_software_endstops) {
-    if (destination_x > X_MAX_LENGTH) destination_x = X_MAX_LENGTH;
-    if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
-    if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
-  }
-  if(code_seen('Z')) {
-    feedrate = min(feedrate,RAPID_Z);
-  }else{
-    feedrate = min(feedrate,RAPID_XY);
-  }
-}
-
-/*void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
-{
-}
-*/
 
 inline void do_x_step()
 {
