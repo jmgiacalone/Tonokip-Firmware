@@ -1,13 +1,18 @@
 #ifndef PARAMETERS_H
 #define PARAMETERS_H
 
-#define DEBUG false
-
-#define SDSUPPORT 1
-
+#define DEBUG 0
 // NO RS485/EXTRUDER CONTROLLER SUPPORT
 // PLEASE VERIFY PIN ASSIGNMENTS FOR YOUR CONFIGURATION!!!!!!!
 #define MOTHERBOARD 3 // ATMEGA168 0, SANGUINO 1, MOTHERBOARD = 2, MEGA 3, ATMEGA328 4
+
+//Comment out to disable SD support
+#define SDSUPPORT 1
+
+//Acceleration settings
+float full_velocity_units = 6; // the units between minimum and G1 move feedrate
+float min_units_per_second = 35; // the minimum feedrate
+float max_units_per_second = 400;
 
 // THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
 const bool USE_THERMISTOR = true; //Set to false if using thermocouple
@@ -23,15 +28,9 @@ float x_steps_per_unit = 80;
 float y_steps_per_unit = 80;
 float z_steps_per_unit = 4571.43;
 float e_steps_per_unit = 724.022; //65.304; //set for sf40 TO 0.85*measured filament feed
-int max_feedrate = 6000;
+//int max_feedrate = 30000;
 #define RAPID_Z 500
-#define RAPID_XY 6000
-
-//float x_steps_per_unit = 10.047;
-//float y_steps_per_unit = 10.047;
-//float z_steps_per_unit = 833.398;
-//float e_steps_per_unit = 0.706;
-//float max_feedrate = 3000;
+#define RAPID_XY 30000
 
 //For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
 const bool X_ENABLE_ON = 0;
@@ -51,6 +50,7 @@ const bool INVERT_Z_DIR = false;
 const bool INVERT_E_DIR = true;
 
 //Endstop Settings
+#define ENDSTOPPULLUPS 1
 const bool ENDSTOPS_INVERTING = 0;
 const bool min_software_endstops = true; //If true, axis won't move to coordinates less than zero.
 const bool max_software_endstops = true;  //If true, axis won't move to coordinates greater than the defined lengths below.
@@ -58,7 +58,6 @@ const int X_MAX_LENGTH = 140;
 const int Y_MAX_LENGTH = 140;
 const int Z_MAX_LENGTH = 100;
 
-//Comms settings
 #define BAUDRATE 115200
 #define MAX_CMD_SIZE 256
 
