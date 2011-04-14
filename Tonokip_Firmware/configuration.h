@@ -10,10 +10,12 @@
 #define SDSUPPORT 1
 
 //Acceleration settings
-float full_velocity_units = 6; // the units between minimum and G1 move feedrate
-float min_units_per_second = 35; // the minimum feedrate
+float full_velocity_units = 8; // the units between minimum and G1 move feedrate
+float min_units_per_second = 30; // the minimum feedrate
 float max_units_per_second = 400;
-
+float acc = 1000;
+//v^2-u^2/2a=s
+//v^2-u^2/2s=a=(400^2-35^2)/2*8=9923.4 mm/s/s
 // THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
 const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 #define THERMOCOUPLE
