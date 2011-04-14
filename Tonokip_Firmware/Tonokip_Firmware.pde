@@ -46,14 +46,10 @@
 // M86  - If Endstop is Not Activated then Abort Print. Specify X and/or Y
 // M92  - Set axis_steps_per_unit - same syntax as G92
 
-
-
 //Stepper Movement Variables
 bool direction_x, direction_y, direction_z, direction_e;
 unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0;
-//unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
-//unsigned long long_full_velocity_units = full_velocity_units * 100;
-unsigned long long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second)/(2*acc)) * 100;
+unsigned long long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc)*100;
 unsigned long max_x_interval = 1000000.0 / (min_units_per_second * x_steps_per_unit);//1x10^6/(35*80)=357.143
 unsigned long max_y_interval = 1000000.0 / (min_units_per_second * y_steps_per_unit);
 unsigned long max_e_interval = 1000000.0 / (min_units_per_second * e_steps_per_unit);
@@ -672,30 +668,28 @@ inline void process_commands()
         Serial.println( feedrate );
         return;
       case 206:
-        if(code_seen('D')){
-          Serial.print("full_velocity_units were "); Serial.println(full_velocity_units);
-          full_velocity_units = code_value();
-          long_full_velocity_units = full_velocity_units * 100;
-          Serial.print("full_velocity_units now "); Serial.println(full_velocity_units);
-        }
         if(code_seen('F')){
           Serial.print("min_units_per_second were "); Serial.println(min_units_per_second);
           min_units_per_second = code_value();
           Serial.print("min_units_per_second now "); Serial.println(min_units_per_second);
         }
+        if(code_seen('A')){
+          Serial.print("acc was "); Serial.println(acc);
+          acc = code_value();
+          long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second)/(2*acc)) * 100;
+          Serial.print("acc now "); Serial.println(acc);
+        }
         break;
       case 207:
         break;
     }
+  }else if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
+  {
+    get_coordinates(); // For X Y Z E F
+    linear_move(destination_x,destination_y,destination_z,destination_e);    
   }else{
-    if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
-    {
-      get_coordinates(); // For X Y Z E F
-      linear_move(destination_x,destination_y,destination_z,destination_e);    
-  }else{
-      Serial.println("Unknown command:");
-      Serial.println(cmdbuffer[bufindr]);
-  }
+    Serial.println("Unknown command:");
+    Serial.println(cmdbuffer[bufindr]);
   }
   ClearToSend();
       
@@ -764,7 +758,9 @@ inline void get_coordinates()
   else destination_e = current_e;
   if(code_seen('F')) {
     next_feedrate = code_value();
-    if(next_feedrate > 0.0) feedrate = next_feedrate;
+    if(next_feedrate > 0.0) feedrate = min(next_feedrate,RAPID_XY);
+    long_full_velocity_units = (sq(max(feedrate/60,min_units_per_second))-sq(min_units_per_second))/(2*acc)*100;
+    //Serial.print("long_full_velocity_units:"); Serial.println(long_full_velocity_units);
   }
   
   
@@ -779,12 +775,8 @@ inline void get_coordinates()
     if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
     if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
   }
-  if(code_seen('Z')) {
-    feedrate = min(feedrate,RAPID_Z);
-  }else{
-    feedrate = min(feedrate,RAPID_XY);
-    //long_full_velocity_units = full_velocity_units * 100 * feedrate / (60 * max_units_per_second);
-    long_full_velocity_units = (sq(feedrate/60)-sq(min_units_per_second)/(2*acc)) * 100;
+  if(code_seen('Z') && feedrate > RAPID_Z) {
+    feedrate = RAPID_Z;
   }
 }
 
@@ -1171,7 +1163,7 @@ void manage_bed()
 #ifdef THERMOCOUPLE
 void tcTemperature()
 {
-  int value = 0;
+  int value = 9999;
   byte error_tc = 0;
 
   digitalWrite(MAX6675_EN, 0); // Enable device
