@@ -1,3 +1,10 @@
+2011 04 15 - successful test print with caru's (modified) acc/dec code
+- write to SD card
+- run from SD card
+- acceleration rate specified in configuration.h
+- pins.h amalgamated into configuration.h
+- nozzle can run with either thermistor or MAX6675 thermocouple sensor
+- nozzle heater is PID controlled
 2011 01 16 - First print
 - Homing axes works correctly
 - Fixed overflow on Z axis moves
@@ -5,10 +12,11 @@
 
 Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
 
-TODO:
-Inactivity timer failsafe that can be enabled/disabled by using a custom Mcode.
-Max Endstop support (easy).
-Add support for DC Extruders.
-Store internal position using steps(long int) instead of units(float).
+Features:
 
-Test thermocouple support.
+- Compiles with Arduino IDE
+- Acc/dec for smooth axis motion
+- supports 2 heaters (one PID, one on/off)
+- proven to work on RAMPS
+- proven to work with Repsnapper on Ubuntu 10.04
+

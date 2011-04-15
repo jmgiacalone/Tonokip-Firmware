@@ -784,16 +784,16 @@ inline void get_coordinates()
 void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make linear move with preset speeds and destinations, see G0 and G1
 {
   unsigned long x_steps_remaining, y_steps_remaining, z_steps_remaining, e_steps_remaining;
-  unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
+//  unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
   long x_interval, y_interval, z_interval, e_interval; // for speed delay
 /*  xdiff=(dest_x - current_x);
         ydiff=(dest_y - current_y);
         zdiff=(dest_z - current_z);
         ediff=(dest_e - current_e);
-*/        x_steps_to_take = x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
-        y_steps_to_take = y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
-        z_steps_to_take = z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
-        e_steps_to_take = e_steps_remaining = abs(dest_e)*e_steps_per_unit;//11294.7432 for 15.6mm move
+*/        x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
+        y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
+        z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
+        e_steps_remaining = abs(dest_e)*e_steps_per_unit;//11294.7432 for 15.6mm move
         if(feedrate<10)
             feedrate=10;
         #define X_TIME_FOR_MOVE ((float)x_steps_remaining / (x_steps_per_unit*feedrate/60000000))//11200/(80*3000/60000000)=2800000
@@ -893,7 +893,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   unsigned int delta_z = z_steps_remaining;
   //unsigned long z_interval_nanos;
   long interval;
-  boolean steep_y = delta_y > delta_x && delta_y > delta_e;// && delta_y > delta_z;
+  boolean steep_y = delta_y > delta_x && delta_y >= delta_e;// && delta_y > delta_z;
   boolean steep_x = delta_x >= delta_y && delta_x >= delta_e;// && delta_x > delta_z;
   boolean steep_e = delta_e > delta_x && delta_e > delta_y;
   
