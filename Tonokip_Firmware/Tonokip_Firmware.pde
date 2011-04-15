@@ -87,6 +87,7 @@ int temp_iState;
 int temp_dState;
 unsigned long previous_millis_heater=0;
 int output;
+int prev_nozzle_curr;
         
 //Inactivity shutdown variables
 unsigned long previous_millis_cmd=0;
@@ -1114,13 +1115,20 @@ void manage_nozzle()
     int temp_iState_min = -PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     int temp_iState_max = PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
     
+    
 #ifdef THERMOCOUPLE
+//    prev_nozzle_curr = nozzle_curr;
     tcTemperature();
+    //cancel heat command if heat error
+//    if(abs(prev_nozzle_curr-nozzle_curr)>100) {
+//      nozzle_targ = 0;
+//      Serial.println("nT err");
+//      return;
+//    }
 #else
     //nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
     nozzle_curr = 1023 - analogRead(TEMP_1_PIN);
 #endif
-
     // code for PID control
     error = nozzle_targ - nozzle_curr;
 
@@ -1163,7 +1171,7 @@ void manage_bed()
 #ifdef THERMOCOUPLE
 void tcTemperature()
 {
-  int value = 9999;
+  int value = 0;
   byte error_tc = 0;
 
   digitalWrite(MAX6675_EN, 0); // Enable device
