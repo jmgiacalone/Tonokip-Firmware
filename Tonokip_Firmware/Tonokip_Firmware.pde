@@ -677,7 +677,7 @@ inline void process_commands()
         if(code_seen('A')){
           Serial.print("acc was "); Serial.println(acc);
           acc = code_value();
-          long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second)/(2*acc)) * 100;
+          long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc) * 100;
           Serial.print("acc now "); Serial.println(acc);
         }
         break;
@@ -784,16 +784,16 @@ inline void get_coordinates()
 void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make linear move with preset speeds and destinations, see G0 and G1
 {
   unsigned long x_steps_remaining, y_steps_remaining, z_steps_remaining, e_steps_remaining;
-//  unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
+  unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
   long x_interval, y_interval, z_interval, e_interval; // for speed delay
 /*  xdiff=(dest_x - current_x);
         ydiff=(dest_y - current_y);
         zdiff=(dest_z - current_z);
         ediff=(dest_e - current_e);
-*/        x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
-        y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
-        z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
-        e_steps_remaining = abs(dest_e)*e_steps_per_unit;//11294.7432 for 15.6mm move
+*/        x_steps_to_take = x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
+        y_steps_to_take = y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
+        z_steps_to_take = z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
+        e_steps_to_take = e_steps_remaining = abs(dest_e)*e_steps_per_unit;//11294.7432 for 15.6mm move
         if(feedrate<10)
             feedrate=10;
         #define X_TIME_FOR_MOVE ((float)x_steps_remaining / (x_steps_per_unit*feedrate/60000000))//11200/(80*3000/60000000)=2800000
@@ -1048,10 +1048,14 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   if(DISABLE_E) disable_e();
   
   // Update current position partly based on direction, we probably can combine this with the direction code above...
-  current_x = dest_x;
-  current_y = dest_y;
-  current_z = dest_z;
-  //current_e = dest_e;
+  if (dest_x > current_x) current_x += x_steps_to_take/x_steps_per_unit;
+  else current_x -= x_steps_to_take/x_steps_per_unit;
+  if (dest_y > current_y) current_y += y_steps_to_take/y_steps_per_unit;
+  else current_y -= y_steps_to_take/y_steps_per_unit;
+  if (dest_z > current_z) current_z += z_steps_to_take/z_steps_per_unit;
+  else current_z -= z_steps_to_take/z_steps_per_unit;
+//  if (dest_e > current_e) current_e = current_e + e_steps_to_take/e_steps_per_unit;
+//  else current_e = current_e - e_steps_to_take/e_steps_per_unit;
 }
 
 
@@ -1196,7 +1200,7 @@ void tcTemperature()
 
   digitalWrite(MAX6675_EN, 1); //Disable Device
 
-  if(error_tc)
+  if(error_tc || (value / TEMP_MULTIPLIER) > 300 )
   {
     nozzle_curr = 9999;
   }else{
