@@ -2,6 +2,7 @@
 // Licence: GPL
 //jmgiacalone/Tonokip-Firmware -branch jmgkip
 #include "configuration.h"
+//#include <EEPROM.h>
 
 #ifdef SDSUPPORT
 #include "SdFat.h"
@@ -54,7 +55,7 @@ unsigned long max_x_interval = 1000000.0 / (min_units_per_second * x_steps_per_u
 unsigned long max_y_interval = 1000000.0 / (min_units_per_second * y_steps_per_unit);
 unsigned long max_e_interval = 1000000.0 / (min_units_per_second * e_steps_per_unit);
 unsigned long max_interval;
-boolean acceleration_enabled=true;
+boolean acceleration_enabled,accelerating;
 float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 float feedrate = 1500, next_feedrate;
@@ -140,7 +141,7 @@ inline void write_command(char *buf){
     //Serial.println(begin);
     file.write(begin);
     if (file.writeError){
-        Serial.println("error writing to file");
+        Serial.println("Err: file write");
     }
 }
 
@@ -150,6 +151,7 @@ inline void write_command(char *buf){
 
 void setup()
 { 
+//  EEPROM.write(0,1);
   Serial.begin(BAUDRATE);
   Serial.println("start");
   for(int i=0;i<BUFSIZE;i++){
@@ -182,6 +184,10 @@ void setup()
   if(Y_MAX_PIN > -1) { pinMode(Y_MAX_PIN,INPUT); digitalWrite(Y_MAX_PIN,HIGH);}
   if(Z_MAX_PIN > -1) { pinMode(Z_MAX_PIN,INPUT); digitalWrite(Z_MAX_PIN,HIGH);}
   #endif
+  #ifdef PROBING
+    pinMode(PROBE_PIN,INPUT);
+    digitalWrite(PROBE_PIN,HIGH);
+  #endif
   //Initialize Enable Pins
   if(X_ENABLE_PIN > -1) pinMode(X_ENABLE_PIN,OUTPUT);
   if(Y_ENABLE_PIN > -1) pinMode(Y_ENABLE_PIN,OUTPUT);
@@ -204,8 +210,6 @@ void setup()
   analogWrite(FAN_PIN,255);
  
 #ifdef SDSUPPORT
-
-//power to SD reader
 initsd();
 #endif
   
@@ -229,7 +233,7 @@ void loop()
         }else{
             file.close();
             savetosd=false;
-            Serial.println("Done saving file.");
+            Serial.println("File saved");
         }
     }else{
         process_commands();
@@ -262,7 +266,7 @@ inline void get_command()
     strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
     gcode_N = (strtol(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL, 10));
     if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer[bufindw], "M110") == NULL) ) {
-      Serial.print("Serial Error: N!=(N-1)+1, Last Line:");
+      Serial.print("Serial Error: N!=(N-1)+1:");
       Serial.println(gcode_LastN);
       Serial.println(gcode_N);
       FlushSerialRequestResend();
@@ -288,7 +292,7 @@ inline void get_command()
     }
     else 
     {
-      Serial.print("Error: No * with N, Last Line:");
+      Serial.print("Error: No * with N:");
       Serial.println(gcode_LastN);
       FlushSerialRequestResend();
       serial_count=0;
@@ -302,7 +306,7 @@ inline void get_command()
   {
     if((strstr(cmdbuffer[bufindw], "*") != NULL))
     {
-      Serial.print("Error: No N with *, Last Line:");
+      Serial.print("Error: No N with *:");
       Serial.println(gcode_LastN);
       serial_count=0;
       return;
@@ -349,7 +353,7 @@ if(!sdmode || serial_count!=0){
         sdpos=file.curPosition();
         if(sdpos>=filesize){
             sdmode=false;
-            Serial.println("Done printing file");
+            Serial.println("SD print done");
         }
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
@@ -408,12 +412,40 @@ inline void process_commands()
         break;
       case 28: // G28 - reference axes TODO
         NotHome = true;
-        reference_x();
-        reference_y();
-        reference_z();
+#ifndef PROBING
+        reference_x((code_seen('X')) ? code_value() : 0);
+        reference_y((code_seen('Y')) ? code_value() : 0);
+        reference_z((code_seen('Z')) ? code_value() : 0);
         current_e = 0;
+#else
+        //fast feed XY to roughly find home
+        feedrate = 1000;
+        linear_move(-(X_MAX_LENGTH + 1), -(Y_MAX_LENGTH + 1), current_z, current_e);
+        current_x = current_y = 0;
+        //back off
+        linear_move(1, 1, current_z, current_e);
+        //low feed home X
+        feedrate = 100;
+        linear_move(-1, current_y, current_z, current_e);
+        current_x = (code_seen('X')) ? code_value() : 0;
+        //low feed home Y
+        linear_move(current_x, -1, current_z, current_e);
+        current_y = (code_seen('Y')) ? code_value() : 0;
+        feedrate = 1500;
+        NotHome = false;
+        //move to centre of build surface ready to probe Z
+        linear_move(Z_HOME_X,Z_HOME_Y,current_z,current_e);
+        //probe Z
+        probe_z(-1);
+        current_z = (code_seen('Z')) ? code_value() : 0;
+        feedrate = 1500;
+        break;
+      case 31: //probe
+        NotHome = true;
+        if(code_seen('Z')) probe_z(code_value());
         NotHome = false;
         break;
+#endif
       case 90: // G90
         relative_mode = false;
         break;
@@ -512,11 +544,15 @@ inline void process_commands()
         break;
       case 28: //M28 - Start SD write
         if(sdactive){
+          char* npos=0;
             file.close();
             sdmode=false;
             starpos=(strchr(strchr_pointer+4,'*'));
-            if(starpos!=NULL)
+            if(starpos!=NULL){
+              npos=strchr(cmdbuffer[bufindr], 'N');
+              strchr_pointer = strchr(npos,' ')+1;
                 *(starpos-1)='\0';
+            }
             if (!file.open(&root, strchr_pointer+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
             {
             Serial.print("open failed: ");
@@ -624,7 +660,7 @@ inline void process_commands()
       case 107: //M107 Fan Off
         digitalWrite(FAN_PIN, LOW);
         break;
-      case 80: // M81 - ATX Power On
+/*      case 80: // M81 - ATX Power On
         if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,OUTPUT); //GND
         break;
       case 81: // M81 - ATX Power Off
@@ -636,13 +672,13 @@ inline void process_commands()
       case 83:
         relative_mode_e = true;
         break;
-      case 84:
+*/      case 84:
         disable_x();
         disable_y();
         disable_z();
         disable_e();
         break;
-      case 85: // M85
+/*      case 85: // M85
         code_seen('S');
         max_inactive_time = code_value()*1000; 
         break;
@@ -650,7 +686,7 @@ inline void process_commands()
         if(code_seen('X')) if( digitalRead(X_MIN_PIN) == ENDSTOPS_INVERTING ) kill(3);
         if(code_seen('Y')) if( digitalRead(Y_MIN_PIN) == ENDSTOPS_INVERTING ) kill(4);
         break;
-      case 92: // M92
+*/      case 92: // M92
         if(code_seen('X')) x_steps_per_unit = code_value();
         if(code_seen('Y')) y_steps_per_unit = code_value();
         if(code_seen('Z')) z_steps_per_unit = code_value();
@@ -668,6 +704,7 @@ inline void process_commands()
         Serial.print( " F" );
         Serial.println( feedrate );
         return;
+#if DEBUG == 2
       case 206:
         if(code_seen('F')){
           Serial.print("m_u_p_s were "); Serial.println(min_units_per_second);
@@ -680,14 +717,13 @@ inline void process_commands()
           long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc) * 100;
           Serial.print("acc now "); Serial.println(acc);
         }
+#endif
 /*        if(code_seen('B')){
           Serial.print("a was "); Serial.println(a);
           a = code_value();
           //long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc) * 100;
           Serial.print("a now "); Serial.println(a);
         }*/
-        break;
-      case 207:
         break;
     }
   }else if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
@@ -701,7 +737,8 @@ inline void process_commands()
   ClearToSend();
       
 }
-inline void reference_x()
+#ifndef PROBING
+inline void reference_x(float homePos)
 {
         feedrate = 1000;
         linear_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
@@ -709,10 +746,10 @@ inline void reference_x()
         linear_move(1, current_y, current_z, current_e);
         feedrate = 100;
         linear_move(-1, current_y, current_z, current_e);
-        current_x = 0;
+        current_x = homePos;
         feedrate = 1500;
 }
-inline void reference_y()
+inline void reference_y(float homePos)
 {
         feedrate = 1000;
         linear_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
@@ -720,20 +757,44 @@ inline void reference_y()
         linear_move(current_x, 1, current_z, current_e);
         feedrate = 100;
         linear_move(current_x, -1, current_z, current_e);
-        current_y = 0;
+        current_y = homePos;
         feedrate = 1500;
 }
-inline void reference_z()
+inline void reference_z(float homePos)
 {
-        feedrate = 100;
-        linear_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
-        current_z = 0;
-        linear_move(current_x, current_y, 1, current_e);
-        linear_move(current_x, current_y, -1, current_e);
-        current_z = 0;
-        feedrate = 1500;
+        
+  //move to probing position
+  linear_move(Z_HOME_X, Z_HOME_Y, current_z, current_e);
+  feedrate = 100;
+  linear_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
+  current_z = 0;
+  linear_move(current_x, current_y, 1, current_e);
+  linear_move(current_x, current_y, -1, current_e);
+  current_z = homePos;
+  feedrate = 1500;
 }
-
+#else
+void probe_z(float dest_z)
+{
+  float start_z = current_z;
+  //check probe is down
+  if(digitalRead(PROBE_PIN)==1) {
+    Serial.println("Err:probe open");
+  }else{
+    //find surface
+    feedrate = 100;
+    while(digitalRead(PROBE_PIN)==1 && current_z > dest_z) {
+      linear_move(current_x,current_y,current_z-0.1,current_e);
+    }
+    //back off until probe contact makes
+    feedrate = 50;
+    while(digitalRead(PROBE_PIN)==0 && current_z < start_z) {
+      linear_move(current_x,current_y,current_z+0.01,current_e);
+    }
+    Serial.println(current_z);
+  }
+}
+#endif
 inline void FlushSerialRequestResend()
 {
   //char cmdbuffer[bufindr][100]="Resend:";
@@ -945,6 +1006,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   if(interval > max_interval) acceleration_enabled = false;
   unsigned long steps_done = 0;
   unsigned int steps_acceleration_check = 1;
+  accelerating = acceleration_enabled;
   //long prev_interval;
   
   // move until no more steps remain 
@@ -966,9 +1028,11 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
         interval = max_interval - ((max_interval - full_interval) * steps_remaining / virtual_full_velocity_steps);
         //interval = prev_interval - (2*prev_interval/(4*steps_remaining*a+1));
       }
+      accelerating = true;
     } else if (steps_done - full_velocity_steps >= 1 || !acceleration_enabled){
       //Else, we are just use the full speed interval as current interval
       interval = full_interval;
+      accelerating = false;
     }
       
     //If there are x, y or e steps remaining, perform Bresenham algorithm
@@ -1044,7 +1108,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
       while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
     }    
     
-    if( (millis() - previous_millis_heater) >= HEAT_INTERVAL ) {
+    if(!accelerating &&  (millis() - previous_millis_heater) >= HEAT_INTERVAL ) {
       manage_heaters();      
       manage_inactivity(2);
     }
@@ -1285,10 +1349,10 @@ inline void kill(byte debug)
   {
     switch(debug)
     {
-      case 1: Serial.print("Inactivity Shutdown, Last Line: "); break;
-      case 2: Serial.print("Linear Move Abort, Last Line: "); break;
-      case 3: Serial.print("Homing X Min Stop Fail, Last Line: "); break;
-      case 4: Serial.print("Homing Y Min Stop Fail, Last Line: "); break;
+      case 1: Serial.print("Inactivity Shutdown: "); break;
+      case 2: Serial.print("Linear Move Abort: "); break;
+/*      case 3: Serial.print("Homing X Min Stop Fail: "); break;
+      case 4: Serial.print("Homing Y Min Stop Fail: "); break;*/
     } 
     Serial.println(gcode_LastN);
     delay(5000); // 5 Second delay

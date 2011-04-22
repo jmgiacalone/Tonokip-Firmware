@@ -61,6 +61,14 @@ const int X_MAX_LENGTH = 140;
 const int Y_MAX_LENGTH = 140;
 const int Z_MAX_LENGTH = 100;
 
+#define PROBING
+#ifdef PROBING
+  //probing position
+  #define Z_HOME_X 70
+  #define Z_HOME_Y 70
+  #define PROBE_PIN 19 //use Z max pin
+#endif
+
 #define BAUDRATE 115200
 #define MAX_CMD_SIZE 256
 
