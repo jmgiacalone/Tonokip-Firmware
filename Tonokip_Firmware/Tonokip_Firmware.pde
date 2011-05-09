@@ -51,13 +51,14 @@
 bool direction_x, direction_y, direction_z, direction_e;
 unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0;
 unsigned long long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc)*100;
-unsigned long max_x_interval = 1000000.0 / (min_units_per_second * x_steps_per_unit);//1x10^6/(35*80)=357.143
-unsigned long max_y_interval = 1000000.0 / (min_units_per_second * y_steps_per_unit);
-unsigned long max_e_interval = 1000000.0 / (min_units_per_second * e_steps_per_unit);
-unsigned long max_interval;
+unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);//1x10^6/(35*80)=357.143
+unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
+unsigned long max_e_interval = 100000000.0 / (min_units_per_second * e_steps_per_unit);
+unsigned long max_interval, interval;
 boolean acceleration_enabled,accelerating;
 float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
+long x_interval, y_interval, z_interval, e_interval; // for speed delay
 float feedrate = 1500, next_feedrate;
 float time_for_move;
 long gcode_N, gcode_LastN;
@@ -210,6 +211,10 @@ void setup()
   analogWrite(FAN_PIN,255);
  
 #ifdef SDSUPPORT
+#if SDPOWER > -1
+pinMode(SDPOWER,OUTPUT); 
+digitalWrite(SDPOWER,HIGH);
+#endif
 initsd();
 #endif
   
@@ -413,9 +418,9 @@ inline void process_commands()
       case 28: // G28 - reference axes TODO
         NotHome = true;
 #ifndef PROBING
-        reference_x((code_seen('X')) ? code_value() : 0);
-        reference_y((code_seen('Y')) ? code_value() : 0);
-        reference_z((code_seen('Z')) ? code_value() : 0);
+        reference_x();
+        reference_y();
+        reference_z();
         current_e = 0;
 #else
         //fast feed XY to roughly find home
@@ -443,9 +448,9 @@ inline void process_commands()
       case 31: //probe
         NotHome = true;
         if(code_seen('Z')) probe_z(code_value());
+#endif
         NotHome = false;
         break;
-#endif
       case 90: // G90
         relative_mode = false;
         break;
@@ -738,7 +743,7 @@ inline void process_commands()
       
 }
 #ifndef PROBING
-inline void reference_x(float homePos)
+inline void reference_x()
 {
         feedrate = 1000;
         linear_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
@@ -746,10 +751,10 @@ inline void reference_x(float homePos)
         linear_move(1, current_y, current_z, current_e);
         feedrate = 100;
         linear_move(-1, current_y, current_z, current_e);
-        current_x = homePos;
+        current_x = 0;
         feedrate = 1500;
 }
-inline void reference_y(float homePos)
+inline void reference_y()
 {
         feedrate = 1000;
         linear_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
@@ -757,20 +762,17 @@ inline void reference_y(float homePos)
         linear_move(current_x, 1, current_z, current_e);
         feedrate = 100;
         linear_move(current_x, -1, current_z, current_e);
-        current_y = homePos;
+        current_y = 0;
         feedrate = 1500;
 }
-inline void reference_z(float homePos)
+inline void reference_z()
 {
-        
-  //move to probing position
-  linear_move(Z_HOME_X, Z_HOME_Y, current_z, current_e);
   feedrate = 100;
   linear_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
   current_z = 0;
   linear_move(current_x, current_y, 1, current_e);
   linear_move(current_x, current_y, -1, current_e);
-  current_z = homePos;
+  current_z = 0;
   feedrate = 1500;
 }
 #else
@@ -852,7 +854,6 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
 {
   unsigned long x_steps_remaining, y_steps_remaining, z_steps_remaining, e_steps_remaining;
   unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
-  long x_interval, y_interval, z_interval, e_interval; // for speed delay
         x_steps_to_take = x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
         y_steps_to_take = y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
         z_steps_to_take = z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
@@ -869,10 +870,10 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
         //if(time_for_move <= 0) time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
         time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
 
-        if(x_steps_remaining) x_interval = time_for_move/x_steps_remaining;//*100;//2800000/8000=350
-        if(y_steps_remaining) y_interval = time_for_move/y_steps_remaining;//*100;
-        if(z_steps_remaining) z_interval = time_for_move/z_steps_remaining;//*100;
-        if(e_steps_remaining) e_interval = time_for_move/e_steps_remaining;//*100;
+        if(x_steps_remaining) x_interval = time_for_move/x_steps_remaining*100;//2800000/8000=350
+        if(y_steps_remaining) y_interval = time_for_move/y_steps_remaining*100;
+        if(z_steps_remaining) z_interval = time_for_move/z_steps_remaining*100;
+        if(e_steps_remaining) e_interval = time_for_move/e_steps_remaining*100;
         
 	#if DEBUG == 1       
           Serial.print("destination_x: "); Serial.println(dest_x); 
@@ -953,7 +954,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   //unsigned long e_interval_nanos;
   unsigned int delta_z = z_steps_remaining;
   //unsigned long z_interval_nanos;
-  long interval;
+  //long interval;
   boolean steep_y = delta_y > delta_x && delta_y >= delta_e;// && delta_y > delta_z;
   boolean steep_x = delta_x >= delta_y && delta_x >= delta_e;// && delta_x > delta_z;
   boolean steep_e = delta_e > delta_x && delta_e > delta_y;
@@ -972,7 +973,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   if(steep_y) {
    error_x = delta_y / 2;
    error_e = delta_y / 2;
-   previous_micros_y=micros();//*100;
+   previous_micros_y=micros()*100;
    interval = y_interval;
    virtual_full_velocity_steps = long_full_velocity_units * y_steps_per_unit /100;
    full_velocity_steps = min(virtual_full_velocity_steps, delta_y / 2);
@@ -980,26 +981,26 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
 //   steps_to_take = delta_y;
    max_interval = max_y_interval;
   } else if (steep_x) {
-   error_y = delta_x / 2;//11200/2=6600
+   error_y = delta_x / 2;
    error_e = delta_x / 2;
-   previous_micros_x=micros();//*100;
-   interval = x_interval;//350
-   virtual_full_velocity_steps = long_full_velocity_units * x_steps_per_unit /100;//240
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_x / 2);//240 for x move of 140mm
-   steps_remaining = delta_x;//11200
-//   steps_to_take = delta_x;//11200
-   max_interval = max_x_interval;//357.143
+   previous_micros_x=micros()*100;
+   interval = x_interval;
+   virtual_full_velocity_steps = long_full_velocity_units * x_steps_per_unit /100;
+   full_velocity_steps = min(virtual_full_velocity_steps, delta_x / 2);
+   steps_remaining = delta_x;
+//   steps_to_take = delta_x;
+   max_interval = max_x_interval;
   } else if (steep_e) {
    error_y = delta_e / 2;
    error_x = delta_e / 2;
-   previous_micros_e=micros();//*100;
+   previous_micros_e=micros()*100;
    interval = e_interval;
    virtual_full_velocity_steps = long_full_velocity_units * e_steps_per_unit /100;
    full_velocity_steps = min(virtual_full_velocity_steps, delta_e / 2);
    steps_remaining = delta_e;
    max_interval = max_e_interval;
   }
-  previous_micros_z=micros();//*100;
+  previous_micros_z=micros()*100;
   acceleration_enabled = true;
   if(full_velocity_steps == 0) full_velocity_steps++;
   long full_interval = interval;//max(interval, max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps));//max( 350 , 357.143-((357.143-?)*800/800) )=350
@@ -1042,7 +1043,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
         if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
       }
       if(steep_y) {
-        timediff = micros() - previous_micros_y;
+        timediff = micros() * 100 - previous_micros_y;
         while(timediff >= interval && y_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
@@ -1060,7 +1061,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
           }
         }
       } else if (steep_x) {
-        timediff=micros() - previous_micros_x;
+        timediff=micros() * 100 - previous_micros_x;
         while(timediff >= interval && x_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
@@ -1078,7 +1079,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
           }
         }
       } else if (steep_e) {
-        timediff=micros() - previous_micros_e;
+        timediff=micros() * 100 - previous_micros_e;
         while(timediff >= interval && e_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
@@ -1104,7 +1105,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
       if(NotHome){
         if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
       }
-      timediff=micros() - previous_micros_z;
+      timediff=micros() * 100 - previous_micros_z;
       while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
     }    
     
@@ -1134,7 +1135,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
 inline void do_x_step()
 {
   digitalWrite(X_STEP_PIN, HIGH);
-  previous_micros_x = micros();
+  previous_micros_x += interval;
   //delayMicroseconds(3);
   digitalWrite(X_STEP_PIN, LOW);
 }
@@ -1142,7 +1143,7 @@ inline void do_x_step()
 inline void do_y_step()
 {
   digitalWrite(Y_STEP_PIN, HIGH);
-  previous_micros_y = micros();
+  previous_micros_y += interval;
   //delayMicroseconds(3);
   digitalWrite(Y_STEP_PIN, LOW);
 }
@@ -1150,7 +1151,7 @@ inline void do_y_step()
 inline void do_z_step()
 {
   digitalWrite(Z_STEP_PIN, HIGH);
-  previous_micros_z = micros();
+  previous_micros_z += z_interval;
   //delayMicroseconds(3);
   digitalWrite(Z_STEP_PIN, LOW);
 }
@@ -1158,7 +1159,7 @@ inline void do_z_step()
 inline void do_e_step()
 {
   digitalWrite(E_STEP_PIN, HIGH);
-  previous_micros_e = micros();
+  previous_micros_e += interval;
   //delayMicroseconds(3);
   digitalWrite(E_STEP_PIN, LOW);
 }

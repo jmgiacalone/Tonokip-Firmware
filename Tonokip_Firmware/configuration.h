@@ -19,7 +19,7 @@ float acc = 4000;//1000;
 //v^2-u^2/2s=a=(400^2-35^2)/2*8=9923.4 mm/s/s
 // THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
 const bool USE_THERMISTOR = true; //Set to false if using thermocouple
-#define THERMOCOUPLE
+//#define THERMOCOUPLE
 
 // Calibration formulas
 // e_extruded_steps_per_mm = e_feedstock_steps_per_mm * (desired_extrusion_diameter^2 / feedstock_diameter^2)
@@ -57,11 +57,11 @@ const bool INVERT_E_DIR = true;
 const bool ENDSTOPS_INVERTING = 0;
 const bool min_software_endstops = true; //If true, axis won't move to coordinates less than zero.
 const bool max_software_endstops = true;  //If true, axis won't move to coordinates greater than the defined lengths below.
-const int X_MAX_LENGTH = 140;
-const int Y_MAX_LENGTH = 140;
+const int X_MAX_LENGTH = 150;
+const int Y_MAX_LENGTH = 148;
 const int Z_MAX_LENGTH = 100;
 
-#define PROBING
+//#define PROBING
 #ifdef PROBING
   //probing position
   #define Z_HOME_X 70
@@ -125,6 +125,53 @@ short _thTempTable[bNUMTEMPS][2] = {
 {1024,-5}
 };
 
+#ifndef THERMOCOUPLE
+//nozzle table
+#define nNUMTEMPS 40
+short  _thNTempTable[nNUMTEMPS][2] = {
+   {1, 9999},
+   {27, 400},
+   {53, 300},
+   {79, 290},
+   {105, 280},
+   {131, 270},
+   {157, 260},
+   {183, 250},
+   {209, 240},
+   {235, 230},
+   {261, 220},
+   {287, 210},
+   {313, 197},
+   {340, 193},
+   {366, 184},
+   {391, 174},
+   {417, 170},
+   {442, 163},
+   {467, 157},
+   {495, 151},
+   {521, 134},
+   {547, 125},
+   {573, 129},
+   {599, 124},
+   {625, 120},
+   {652, 112},
+   {677, 107},
+   {704, 101},
+   {729, 95},
+   {755, 91},
+   {781, 87},
+   {806, 80},
+   {831, 74},
+   {860, 65},
+   {886, 57},
+   {910, 47},
+   {936, 36},
+   {963, 29},
+   {991, 14},
+   {1015, 2}
+};
+#endif
+
 /****************************************************************************************
 * Arduino Mega pin assignment
 *
@@ -168,7 +215,9 @@ short _thTempTable[bNUMTEMPS][2] = {
   
   //#define HEATER_0_PIN        12  // UNCOMMENT THIS LINE FOR V1.0
   #define HEATER_1_PIN       10 // THIS LINE FOR V1.1
-  //#define TEMP_1_PIN          1   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+#ifndef THERMOCOUPLE
+  #define TEMP_1_PIN          1   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
+#endif
   
   #define HEATER_0_PIN        8
   #define TEMP_0_PIN          2
@@ -177,5 +226,7 @@ short _thTempTable[bNUMTEMPS][2] = {
   #define MAX6675_EN 41//50 //19
   #define MAX6675_SO 39//48 //20
   #define MAX6675_SCK 43//52 //21
+  
+  #define SDPOWER          48
 
 #endif
