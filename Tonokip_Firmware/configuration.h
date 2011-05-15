@@ -10,15 +10,10 @@
 #define SDSUPPORT 1
 
 //Acceleration settings
-//float full_velocity_units = 8; // the units between minimum and G1 move feedrate
 float min_units_per_second = 25;//10; // the minimum feedrate
-float max_units_per_second = 400;
-float acc = 4000;//1000;
-//float a=1.6;
-//v^2-u^2/2a=s
-//v^2-u^2/2s=a=(400^2-35^2)/2*8=9923.4 mm/s/s
-// THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
-const bool USE_THERMISTOR = true; //Set to false if using thermocouple
+long max_acceleration_units_per_sq_second = 2000;//750; // Max acceleration in mm/s^2 for printing moves
+//long max_travel_acceleration_units_per_sq_second = 1500; // Max acceleration in mm/s^2 for travel moves
+//const bool USE_THERMISTOR = true; //Set to false if using thermocouple
 //#define THERMOCOUPLE
 
 // Calibration formulas
@@ -31,7 +26,7 @@ float x_steps_per_unit = 80;
 float y_steps_per_unit = 80;
 float z_steps_per_unit = 4571.43;
 float e_steps_per_unit = 724.022; //65.304; //set for sf40 TO 0.85*measured filament feed
-//int max_feedrate = 30000;
+
 #define RAPID_Z 500
 #define RAPID_XY 30000
 
@@ -228,5 +223,6 @@ short  _thNTempTable[nNUMTEMPS][2] = {
   #define MAX6675_SCK 43//52 //21
   
   #define SDPOWER          48
+  #define SDSS          53
 
 #endif

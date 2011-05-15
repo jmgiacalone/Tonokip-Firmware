@@ -27,8 +27,7 @@
 // M107 - Fan off
 // M109 - Wait for nozzle temp to reach target temp.
 // M114 - Report current position
-// M140 - Set bed temp
-// M141 - Wait for bed temp to reach target
+
 //Custom M Codes
 // M80  - Turn on Power Supply
 // M20  - List SD card
@@ -39,6 +38,8 @@
 // M25  - Pause SD print
 // M26  - Set SD position in bytes (M26 S12345)
 // M27  - Report SD print status
+// M28  - Start SD write (M28 filename.g)
+// M29  - Stop SD write
 // M81  - Turn off Power Supply
 // M82  - Set E codes absolute (default)
 // M83  - Set E codes relative while in Absolute Coordinates (G90) mode
@@ -46,20 +47,27 @@
 // M85  - Set inactivity shutdown timer with parameter S<seconds>. To disable set zero (default)
 // M86  - If Endstop is Not Activated then Abort Print. Specify X and/or Y
 // M92  - Set axis_steps_per_unit - same syntax as G92
+// M115	- Capabilities string
+// M140 - Set bed target temp
+// M190 - Wait for bed current temp to reach target temp.
 
 //Stepper Movement Variables
 bool direction_x, direction_y, direction_z, direction_e;
 unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0;
-unsigned long long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc)*100;
-unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);//1x10^6/(35*80)=357.143
+unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);
 unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
 unsigned long max_e_interval = 100000000.0 / (min_units_per_second * e_steps_per_unit);
-unsigned long max_interval, interval;
-boolean acceleration_enabled,accelerating;
+unsigned long max_interval;
+unsigned long x_steps_per_sqr_second = max_acceleration_units_per_sq_second * x_steps_per_unit;
+unsigned long y_steps_per_sqr_second = max_acceleration_units_per_sq_second * y_steps_per_unit;
+unsigned long e_steps_per_sqr_second = max_acceleration_units_per_sq_second * e_steps_per_unit;
+unsigned long steps_per_sqr_second, plateau_steps;
+boolean acceleration_enabled=false ,accelerating=false;
+unsigned long interval;
 float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 long x_interval, y_interval, z_interval, e_interval; // for speed delay
-float feedrate = 1500, next_feedrate;
+float feedrate = 1500, next_feedrate, z_feedrate;
 float time_for_move;
 long gcode_N, gcode_LastN;
 bool relative_mode = false;  //Determines Absolute or Relative Coordinates
@@ -111,11 +119,12 @@ int16_t n;
 
 void initsd(){
 sdactive=false;
+#if SDSS>-1
 if(root.isOpen())
     root.close();
-if (!card.init(SPI_FULL_SPEED)){
-    if (!card.init(SPI_HALF_SPEED))
-      Serial.println("SD init fail");
+if (!card.init(SPI_FULL_SPEED,SDSS)){
+    //if (!card.init(SPI_HALF_SPEED,SDSS))
+    Serial.println("SD init fail");
 }
 else if (!volume.init(&card))
       Serial.println("volume.init failed");
@@ -123,7 +132,7 @@ else if (!root.openRoot(&volume))
       Serial.println("openRoot failed");
 else 
         sdactive=true;
-
+#endif
 }
 
 inline void write_command(char *buf){
@@ -233,9 +242,9 @@ void loop()
     if(savetosd){
         if(strstr(cmdbuffer[bufindr],"M29")==NULL){
             write_command(cmdbuffer[bufindr]);
-            file.sync();
             Serial.println("ok");
         }else{
+            file.sync();
             file.close();
             savetosd=false;
             Serial.println("File saved");
@@ -637,7 +646,7 @@ inline void process_commands()
 #endif
         }
         break;
-      case 141: // M141 - Wait for bed to reach target temp
+      case 190: // M190 - Wait for bed to reach target temp
         if (code_seen('S'))
          {
            bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
@@ -691,11 +700,14 @@ inline void process_commands()
         if(code_seen('X')) if( digitalRead(X_MIN_PIN) == ENDSTOPS_INVERTING ) kill(3);
         if(code_seen('Y')) if( digitalRead(Y_MIN_PIN) == ENDSTOPS_INVERTING ) kill(4);
         break;
-*/      case 92: // M92
+      case 92: // M92
         if(code_seen('X')) x_steps_per_unit = code_value();
         if(code_seen('Y')) y_steps_per_unit = code_value();
         if(code_seen('Z')) z_steps_per_unit = code_value();
         if(code_seen('E')) e_steps_per_unit = code_value();
+        break;*/
+      case 115: // M115
+        Serial.println("FIRMWARE_NAME:jmgsprint FIRMWARE_URL:https://github.com/jmgiacalone/Tonokip-Firmware PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1");
         break;
       case 114: // M114
         Serial.print( "X" );
@@ -704,31 +716,20 @@ inline void process_commands()
         Serial.print( current_y );
         Serial.print( " Z" );
         Serial.print( current_z );
-        Serial.print( " E" );
-        Serial.print( current_e );
+/*        Serial.print( " E" );
+        Serial.print( current_e );*/
         Serial.print( " F" );
         Serial.println( feedrate );
         return;
-#if DEBUG == 2
-      case 206:
-        if(code_seen('F')){
-          Serial.print("m_u_p_s were "); Serial.println(min_units_per_second);
-          min_units_per_second = code_value();
-          Serial.print("m_u_p_s now "); Serial.println(min_units_per_second);
-        }
+      case 201: // M201
         if(code_seen('A')){
-          Serial.print("acc was "); Serial.println(acc);
-          acc = code_value();
-          long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc) * 100;
-          Serial.print("acc now "); Serial.println(acc);
+          Serial.print("mm/s^2 was "); Serial.println(max_acceleration_units_per_sq_second);
+          max_acceleration_units_per_sq_second = code_value();
+          x_steps_per_sqr_second = max_acceleration_units_per_sq_second * x_steps_per_unit;
+          y_steps_per_sqr_second = max_acceleration_units_per_sq_second * y_steps_per_unit;
+          e_steps_per_sqr_second = max_acceleration_units_per_sq_second * e_steps_per_unit;
+          Serial.print("mm/s^2 now "); Serial.println(max_acceleration_units_per_sq_second);
         }
-#endif
-/*        if(code_seen('B')){
-          Serial.print("a was "); Serial.println(a);
-          a = code_value();
-          //long_full_velocity_units = (sq(max_units_per_second)-sq(min_units_per_second))/(2*acc) * 100;
-          Serial.print("a now "); Serial.println(a);
-        }*/
         break;
     }
   }else if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
@@ -829,8 +830,6 @@ inline void get_coordinates()
   if(code_seen('F')) {
     next_feedrate = code_value();
     if(next_feedrate > 0.0) feedrate = min(next_feedrate,RAPID_XY);
-    long_full_velocity_units = (sq(max(feedrate/60,min_units_per_second))-sq(min_units_per_second))/(2*acc)*100;
-    //Serial.print("long_full_velocity_units:"); Serial.println(long_full_velocity_units);
   }
   
   
@@ -945,7 +944,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
   }  
   
-  unsigned long start_move_micros = micros(); 
+  //unsigned long start_move_micros = micros(); 
   unsigned int delta_x = x_steps_remaining;
   //unsigned long x_interval_nanos;
   unsigned int delta_y = y_steps_remaining;
@@ -964,10 +963,10 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   int error_y;
   int error_z;
   int error_e;
-  unsigned long virtual_full_velocity_steps;
-  unsigned long full_velocity_steps;
+  long max_speed_steps_per_second;
+  long min_speed_steps_per_second;
   unsigned long steps_remaining;
-//  unsigned long steps_to_take;
+  unsigned long steps_to_take;
   
   //Do some Bresenham calculations depending on which axis will lead it.
   if(steep_y) {
@@ -975,67 +974,89 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
    error_e = delta_y / 2;
    previous_micros_y=micros()*100;
    interval = y_interval;
-   virtual_full_velocity_steps = long_full_velocity_units * y_steps_per_unit /100;
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_y / 2);
-   steps_remaining = delta_y;
-//   steps_to_take = delta_y;
    max_interval = max_y_interval;
+   steps_per_sqr_second = y_steps_per_sqr_second;
+   max_speed_steps_per_second = 100000000 / interval;
+   min_speed_steps_per_second = 100000000 / max_interval;
+   float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
+   plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
+   steps_remaining = delta_y;
+   steps_to_take = delta_y;
   } else if (steep_x) {
    error_y = delta_x / 2;
    error_e = delta_x / 2;
    previous_micros_x=micros()*100;
    interval = x_interval;
-   virtual_full_velocity_steps = long_full_velocity_units * x_steps_per_unit /100;
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_x / 2);
-   steps_remaining = delta_x;
-//   steps_to_take = delta_x;
    max_interval = max_x_interval;
+   steps_per_sqr_second = x_steps_per_sqr_second;
+   max_speed_steps_per_second = 100000000 / interval;
+   min_speed_steps_per_second = 100000000 / max_interval;
+   float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
+   plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
+   steps_remaining = delta_x;
+   steps_to_take = delta_x;
   } else if (steep_e) {
    error_y = delta_e / 2;
    error_x = delta_e / 2;
    previous_micros_e=micros()*100;
    interval = e_interval;
-   virtual_full_velocity_steps = long_full_velocity_units * e_steps_per_unit /100;
-   full_velocity_steps = min(virtual_full_velocity_steps, delta_e / 2);
-   steps_remaining = delta_e;
    max_interval = max_e_interval;
+   steps_per_sqr_second = e_steps_per_sqr_second;
+   max_speed_steps_per_second = 100000000 / interval;
+   min_speed_steps_per_second = 100000000 / max_interval;
+   float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
+   plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
+   steps_remaining = delta_e;
+   steps_to_take = delta_e;
   }
   previous_micros_z=micros()*100;
-  acceleration_enabled = true;
-  if(full_velocity_steps == 0) full_velocity_steps++;
-  long full_interval = interval;//max(interval, max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps));//max( 350 , 357.143-((357.143-?)*800/800) )=350
-  if(interval > max_interval) acceleration_enabled = false;
   unsigned long steps_done = 0;
-  unsigned int steps_acceleration_check = 1;
-  accelerating = acceleration_enabled;
-  //long prev_interval;
-  
+    plateau_steps *= 1.01; // This is to compensate we use discrete intervals
+  acceleration_enabled = true;
+  long full_interval = interval;
+  if(interval > max_interval) acceleration_enabled = false;
+  boolean decelerating = false;
+  unsigned long start_move_micros = micros();
+  previous_micros_x=start_move_micros*100;
+  previous_micros_y=previous_micros_x;
+  previous_micros_z=previous_micros_x;
+  previous_micros_e=previous_micros_x;
+
   // move until no more steps remain 
   while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) { 
-    //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
-    //prev_interval = interval;
-    if (acceleration_enabled && steps_done < full_velocity_steps && steps_done / full_velocity_steps < 1 && (steps_done % steps_acceleration_check == 0)) {
-      if(steps_done == 0) {
+        //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
+    if (acceleration_enabled && steps_done == 0) {
         interval = max_interval;
-      } else {
-        interval = max_interval - ((max_interval - full_interval) * steps_done / virtual_full_velocity_steps);
-        //interval = prev_interval - (2*prev_interval/(4*steps_done*a+1));
+    } else if (acceleration_enabled && steps_done <= plateau_steps) {
+        long current_speed = (long) ((((long) steps_per_sqr_second) / 10000)
+	    * ((micros() - start_move_micros)  / 100) + (long) min_speed_steps_per_second);
+	    interval = 100000000 / current_speed;
+      if (interval < full_interval) {
+        accelerating = false;
+      	interval = full_interval;
       }
-    } else if (acceleration_enabled && steps_remaining < full_velocity_steps) {
-      //Else, if acceleration is enabled on this move and we are in the deceleration segment, calculate the current interval
-      if(steps_remaining == 0) {
-        interval = max_interval;
-      } else {
-        interval = max_interval - ((max_interval - full_interval) * steps_remaining / virtual_full_velocity_steps);
-        //interval = prev_interval - (2*prev_interval/(4*steps_remaining*a+1));
+      if (steps_done >= steps_to_take / 2) {
+	plateau_steps = steps_done;
+	max_speed_steps_per_second = 100000000 / interval;
+	accelerating = false;
       }
-      accelerating = true;
-    } else if (steps_done - full_velocity_steps >= 1 || !acceleration_enabled){
+    } else if (acceleration_enabled && steps_remaining <= plateau_steps) { //(interval > minInterval * 100) {
+      if (!accelerating) {
+        start_move_micros = micros();
+        accelerating = true;
+        decelerating = true;
+      }				
+      long current_speed = (long) ((long) max_speed_steps_per_second - ((((long) steps_per_sqr_second) / 10000)
+          * ((micros() - start_move_micros) / 100)));
+      interval = 100000000 / current_speed;
+      if (interval > max_interval)
+	interval = max_interval;
+    } else {
       //Else, we are just use the full speed interval as current interval
       interval = full_interval;
       accelerating = false;
     }
-      
+  
     //If there are x, y or e steps remaining, perform Bresenham algorithm
     if(x_steps_remaining || y_steps_remaining || e_steps_remaining) {
       if(NotHome){
@@ -1059,6 +1080,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
             do_e_step(); e_steps_remaining--;
             error_e += delta_y;
           }
+          if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
         }
       } else if (steep_x) {
         timediff=micros() * 100 - previous_micros_x;
@@ -1077,6 +1099,7 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
             do_e_step(); e_steps_remaining--;
             error_e += delta_x;
           }
+          if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
         }
       } else if (steep_e) {
         timediff=micros() * 100 - previous_micros_e;
@@ -1096,17 +1119,23 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
             do_x_step(); x_steps_remaining--;
             error_x += delta_e;
           }
+          if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
         }
       }
     }
-    
+    if (steps_to_take>0 && (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating))) continue;
+   
     //If there are z steps remaining, check if z steps must be taken
     if(z_steps_remaining) {
       if(NotHome){
         if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
       }
       timediff=micros() * 100 - previous_micros_z;
-      while(timediff >= z_interval && z_steps_remaining) { do_z_step(); z_steps_remaining--; timediff-=z_interval;}
+      while(timediff >= z_interval && z_steps_remaining) { 
+        do_z_step();
+        z_steps_remaining--;
+        timediff-=z_interval;
+      }
     }    
     
     if(!accelerating &&  (millis() - previous_millis_heater) >= HEAT_INTERVAL ) {
@@ -1338,6 +1367,7 @@ float analog2temp(int raw, short table[][2], int numtemps) {
 inline void kill(byte debug)
 {
   if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
+  if(HEATER_1_PIN > -1) digitalWrite(HEATER_1_PIN,LOW);
   
   disable_x();
   disable_y();
