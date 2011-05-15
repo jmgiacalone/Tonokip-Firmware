@@ -1,8 +1,9 @@
 // Tonokip RepRap firmware rewrite based off of Hydra-mmm firmware.
 // Licence: GPL
-//jmgiacalone/Tonokip-Firmware -branch jmgkip
+
+#include "Tonokip_Firmware.h"
 #include "configuration.h"
-//#include <EEPROM.h>
+#include "pins.h"
 
 #ifdef SDSUPPORT
 #include "SdFat.h"
@@ -13,20 +14,21 @@
 
 //Implemented Codes
 //-------------------
-// G0 -> G1
+// G0  -> G1
 // G1  - Coordinated Movement X Y Z E
 // G4  - Dwell S<seconds> or P<milliseconds>
+// G28 - Home all Axis
 // G90 - Use Absolute Coordinates
 // G91 - Use Relative Coordinates
 // G92 - Set current position to cordinates given
 
 //RepRap M Codes
-// M104 - Set target temp
+// M104 - Set extruder target temp
 // M105 - Read current temp
 // M106 - Fan on
 // M107 - Fan off
-// M109 - Wait for nozzle temp to reach target temp.
-// M114 - Report current position
+// M109 - Wait for extruder current temp to reach target temp.
+// M114 - Display current position
 
 //Custom M Codes
 // M80  - Turn on Power Supply
@@ -43,129 +45,167 @@
 // M81  - Turn off Power Supply
 // M82  - Set E codes absolute (default)
 // M83  - Set E codes relative while in Absolute Coordinates (G90) mode
-// M84  - Disable steppers until next move
+// M84  - Disable steppers until next move, 
+//        or use S<seconds> to specify an inactivity timeout, after which the steppers will be disabled.  S0 to disable the timeout.
 // M85  - Set inactivity shutdown timer with parameter S<seconds>. To disable set zero (default)
-// M86  - If Endstop is Not Activated then Abort Print. Specify X and/or Y
 // M92  - Set axis_steps_per_unit - same syntax as G92
 // M115	- Capabilities string
 // M140 - Set bed target temp
 // M190 - Wait for bed current temp to reach target temp.
+// M201 - Set max acceleration in units/s^2 for print moves (M201 X1000 Y1000)
+// M202 - Set max acceleration in units/s^2 for travel moves (M202 X1000 Y1000)
+
 
 //Stepper Movement Variables
 bool direction_x, direction_y, direction_z, direction_e;
-unsigned long previous_micros=0, previous_micros_x=0, previous_micros_y=0, previous_micros_z=0, previous_micros_e=0;
-unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);
-unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
-unsigned long max_e_interval = 100000000.0 / (min_units_per_second * e_steps_per_unit);
-unsigned long max_interval;
-unsigned long x_steps_per_sqr_second = max_acceleration_units_per_sq_second * x_steps_per_unit;
-unsigned long y_steps_per_sqr_second = max_acceleration_units_per_sq_second * y_steps_per_unit;
-unsigned long e_steps_per_sqr_second = max_acceleration_units_per_sq_second * e_steps_per_unit;
-unsigned long steps_per_sqr_second, plateau_steps;
-boolean acceleration_enabled=false ,accelerating=false;
+unsigned long previous_micros = 0, previous_micros_x = 0, previous_micros_y = 0, previous_micros_z = 0, previous_micros_e = 0, previous_millis_heater, previous_millis_bed_heater;
+unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
+#ifdef RAMP_ACCELERATION
+  unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);
+  unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
+  unsigned long max_interval;
+  unsigned long x_steps_per_sqr_second = max_acceleration_units_per_sq_second * x_steps_per_unit;
+  unsigned long y_steps_per_sqr_second = max_acceleration_units_per_sq_second * y_steps_per_unit;
+  unsigned long x_travel_steps_per_sqr_second = max_travel_acceleration_units_per_sq_second * x_steps_per_unit;
+  unsigned long y_travel_steps_per_sqr_second = max_travel_acceleration_units_per_sq_second * y_steps_per_unit;
+  unsigned long steps_per_sqr_second, plateau_steps;
+#endif
+#ifdef EXP_ACCELERATION
+  unsigned long long_full_velocity_units = full_velocity_units * 100;
+  unsigned long long_travel_move_full_velocity_units = travel_move_full_velocity_units * 100;
+  unsigned long max_x_interval = 100000000.0 / (min_units_per_second * x_steps_per_unit);
+  unsigned long max_y_interval = 100000000.0 / (min_units_per_second * y_steps_per_unit);
+  unsigned long max_interval;
+  unsigned long x_min_constant_speed_steps = min_constant_speed_units * x_steps_per_unit,
+    y_min_constant_speed_steps = min_constant_speed_units * y_steps_per_unit, min_constant_speed_steps;
+#endif
+boolean acceleration_enabled = false, accelerating = false;
 unsigned long interval;
-float destination_x =0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
+float destination_x = 0.0, destination_y = 0.0, destination_z = 0.0, destination_e = 0.0;
 float current_x = 0.0, current_y = 0.0, current_z = 0.0, current_e = 0.0;
 long x_interval, y_interval, z_interval, e_interval; // for speed delay
-float feedrate = 1500, next_feedrate, z_feedrate;
+float feedrate = 1500, next_feedrate, z_feedrate, saved_feedrate;
 float time_for_move;
 long gcode_N, gcode_LastN;
 bool relative_mode = false;  //Determines Absolute or Relative Coordinates
-bool relative_mode_e = true;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
-long timediff=0;
+bool relative_mode_e = false;  //Determines Absolute or Relative E Codes while in Absolute Coordinates mode. E is always relative in Relative Coordinates mode.
+long timediff = 0;
+#ifdef STEP_DELAY_RATIO
+  long long_step_delay_ratio = STEP_DELAY_RATIO * 100;
+#endif
 
 
 // comm variables
+#define MAX_CMD_SIZE 96
 #define BUFSIZE 8
 char cmdbuffer[BUFSIZE][MAX_CMD_SIZE];
 bool fromsd[BUFSIZE];
-int bufindr=0;
-int bufindw=0;
-int buflen=0;
-int i=0;
+int bufindr = 0;
+int bufindw = 0;
+int buflen = 0;
+int i = 0;
 char serial_char;
 int serial_count = 0;
 boolean comment_mode = false;
 char *strchr_pointer; // just a pointer to find chars in the cmd string like X, Y, Z, E, etc
 
-//manage heater variables
-int bed_targ = 0;
-int bed_curr;
-int nozzle_targ;
-int nozzle_curr;
-int temp_iState;
-int temp_dState;
-unsigned long previous_millis_heater=0;
-int output;
-int prev_nozzle_curr;
+// Manage heater variables. For a thermistor or AD595 thermocouple, raw values refer to the 
+// reading from the analog pin. For a MAX6675 thermocouple, the raw value is the temperature in 0.25 
+// degree increments (i.e. 100=25 deg). 
+
+int target_raw = 0;
+int current_raw = 0;
+int target_bed_raw = 0;
+int current_bed_raw = 0;
+float tt = 0, bt = 0;
+#ifdef PIDTEMP
+  int temp_iState = 0;
+  int temp_dState = 0;
+  int pTerm;
+  int iTerm;
+  int dTerm;
+      //int output;
+  int error;
+  int temp_iState_min = 100 * -PID_INTEGRAL_DRIVE_MAX / PID_IGAIN;
+  int temp_iState_max = 100 * PID_INTEGRAL_DRIVE_MAX / PID_IGAIN;
+#endif
+#ifdef SMOOTHING
+  uint32_t nma = SMOOTHFACTOR * analogRead(TEMP_0_PIN);
+#endif
+#ifdef WATCHPERIOD
+  int watch_raw = -1000;
+  unsigned long watchmillis = 0;
+#endif
+#ifdef MINTEMP
+  int minttemp = temp2analog(MINTEMP);
+#endif
+#ifdef MAXTEMP
+int maxttemp = temp2analog(MAXTEMP);
+#endif
         
 //Inactivity shutdown variables
-unsigned long previous_millis_cmd=0;
+unsigned long previous_millis_cmd = 0;
 unsigned long max_inactive_time = 0;
-
-boolean NotHome = true;
+unsigned long stepper_inactive_time = 0;
 
 #ifdef SDSUPPORT
-Sd2Card card;
-SdVolume volume;
-SdFile root;
-SdFile file;
-uint32_t filesize=0;
-uint32_t sdpos=0;
-bool sdmode=false;
-bool sdactive=false;
-bool savetosd=false;
-int16_t n;
-
-void initsd(){
-sdactive=false;
-#if SDSS>-1
-if(root.isOpen())
-    root.close();
-if (!card.init(SPI_FULL_SPEED,SDSS)){
-    //if (!card.init(SPI_HALF_SPEED,SDSS))
-    Serial.println("SD init fail");
-}
-else if (!volume.init(&card))
-      Serial.println("volume.init failed");
-else if (!root.openRoot(&volume)) 
-      Serial.println("openRoot failed");
-else 
-        sdactive=true;
-#endif
-}
-
-inline void write_command(char *buf){
-    char* begin=buf;
-    char* npos=0;
-    char* end=buf+strlen(buf)-1;
-    
-    file.writeError = false;
-    if((npos=strchr(buf, 'N')) != NULL){
-        begin = strchr(npos,' ')+1;
-        end =strchr(npos, '*')-1;
+  Sd2Card card;
+  SdVolume volume;
+  SdFile root;
+  SdFile file;
+  uint32_t filesize = 0;
+  uint32_t sdpos = 0;
+  bool sdmode = false;
+  bool sdactive = false;
+  bool savetosd = false;
+  int16_t n;
+  
+  void initsd(){
+  sdactive = false;
+  #if SDSS >- 1
+    if(root.isOpen())
+        root.close();
+    if (!card.init(SPI_FULL_SPEED,SDSS)){
+        //if (!card.init(SPI_HALF_SPEED,SDSS))
+          Serial.println("SD init fail");
     }
-    end[1]='\r';
-    end[2]='\n';
-    end[3]='\0';
-    //Serial.println(begin);
-    file.write(begin);
-    if (file.writeError){
-        Serial.println("Err: file write");
-    }
-}
-
-
+    else if (!volume.init(&card))
+          Serial.println("volume.init failed");
+    else if (!root.openRoot(&volume)) 
+          Serial.println("openRoot failed");
+    else 
+            sdactive = true;
+  #endif
+  }
+  
+  inline void write_command(char *buf){
+      char* begin = buf;
+      char* npos = 0;
+      char* end = buf + strlen(buf) - 1;
+      
+      file.writeError = false;
+      if((npos = strchr(buf, 'N')) != NULL){
+          begin = strchr(npos, ' ') + 1;
+          end = strchr(npos, '*') - 1;
+      }
+      end[1] = '\r';
+      end[2] = '\n';
+      end[3] = '\0';
+      //Serial.println(begin);
+      file.write(begin);
+      if (file.writeError){
+          Serial.println("error writing to file");
+      }
+  }
 #endif
 
 
 void setup()
 { 
-//  EEPROM.write(0,1);
   Serial.begin(BAUDRATE);
   Serial.println("start");
-  for(int i=0;i<BUFSIZE;i++){
-      fromsd[i]=false;
+  for(int i = 0; i < BUFSIZE; i++){
+      fromsd[i] = false;
   }
   //Initialize Step Pins
   if(X_STEP_PIN > -1) pinMode(X_STEP_PIN,OUTPUT);
@@ -187,16 +227,12 @@ void setup()
   
   //endstop pullups
   #ifdef ENDSTOPPULLUPS
-  if(X_MIN_PIN > -1) { pinMode(X_MIN_PIN,INPUT); digitalWrite(X_MIN_PIN,HIGH);}
-  if(Y_MIN_PIN > -1) { pinMode(Y_MIN_PIN,INPUT); digitalWrite(Y_MIN_PIN,HIGH);}
-  if(Z_MIN_PIN > -1) { pinMode(Z_MIN_PIN,INPUT); digitalWrite(Z_MIN_PIN,HIGH);}
-  if(X_MAX_PIN > -1) { pinMode(X_MAX_PIN,INPUT); digitalWrite(X_MAX_PIN,HIGH);}
-  if(Y_MAX_PIN > -1) { pinMode(Y_MAX_PIN,INPUT); digitalWrite(Y_MAX_PIN,HIGH);}
-  if(Z_MAX_PIN > -1) { pinMode(Z_MAX_PIN,INPUT); digitalWrite(Z_MAX_PIN,HIGH);}
-  #endif
-  #ifdef PROBING
-    pinMode(PROBE_PIN,INPUT);
-    digitalWrite(PROBE_PIN,HIGH);
+    if(X_MIN_PIN > -1) { pinMode(X_MIN_PIN,INPUT); digitalWrite(X_MIN_PIN,HIGH);}
+    if(Y_MIN_PIN > -1) { pinMode(Y_MIN_PIN,INPUT); digitalWrite(Y_MIN_PIN,HIGH);}
+    if(Z_MIN_PIN > -1) { pinMode(Z_MIN_PIN,INPUT); digitalWrite(Z_MIN_PIN,HIGH);}
+    if(X_MAX_PIN > -1) { pinMode(X_MAX_PIN,INPUT); digitalWrite(X_MAX_PIN,HIGH);}
+    if(Y_MAX_PIN > -1) { pinMode(Y_MAX_PIN,INPUT); digitalWrite(Y_MAX_PIN,HIGH);}
+    if(Z_MAX_PIN > -1) { pinMode(Z_MAX_PIN,INPUT); digitalWrite(Z_MAX_PIN,HIGH);}
   #endif
   //Initialize Enable Pins
   if(X_ENABLE_PIN > -1) pinMode(X_ENABLE_PIN,OUTPUT);
@@ -205,49 +241,51 @@ void setup()
   if(E_ENABLE_PIN > -1) pinMode(E_ENABLE_PIN,OUTPUT);
 
   if(HEATER_0_PIN > -1) pinMode(HEATER_0_PIN,OUTPUT);
-  #ifdef THERMOCOUPLE
-  pinMode(MAX6675_EN,OUTPUT);
-  pinMode(MAX6675_SO,INPUT);
-  pinMode(MAX6675_SCK,OUTPUT);
-  pinMode(HEATER_1_PIN,OUTPUT);
-  digitalWrite(MAX6675_EN,HIGH);
-
-#endif  
-
-  pinMode(TEMP_0_PIN,INPUT);
-  //pinMode(TEMP_1_PIN,INPUT);
+  if(HEATER_1_PIN > -1) pinMode(HEATER_1_PIN,OUTPUT);
   
-  analogWrite(FAN_PIN,255);
+#ifdef HEATER_USES_MAX6675
+  digitalWrite(SCK_PIN,0);
+  pinMode(SCK_PIN,OUTPUT);
+
+  digitalWrite(MOSI_PIN,1);
+  pinMode(MOSI_PIN,OUTPUT);
+
+  digitalWrite(MISO_PIN,1);
+  pinMode(MISO_PIN,INPUT);
+
+  digitalWrite(MAX6675_SS,1);
+  pinMode(MAX6675_SS,OUTPUT);
+#endif  
  
 #ifdef SDSUPPORT
-#if SDPOWER > -1
-pinMode(SDPOWER,OUTPUT); 
-digitalWrite(SDPOWER,HIGH);
+
+  //power to SD reader
+  #if SDPOWER > -1
+    pinMode(SDPOWER,OUTPUT); 
+    digitalWrite(SDPOWER,HIGH);
+  #endif
+  initsd();
+
 #endif
-initsd();
-#endif
-  
 }
 
 
 void loop()
 {
-
-
   if(buflen<3)
 	get_command();
   
   if(buflen){
 #ifdef SDSUPPORT
     if(savetosd){
-        if(strstr(cmdbuffer[bufindr],"M29")==NULL){
+        if(strstr(cmdbuffer[bufindr],"M29") == NULL){
             write_command(cmdbuffer[bufindr]);
             Serial.println("ok");
         }else{
             file.sync();
             file.close();
-            savetosd=false;
-            Serial.println("File saved");
+            savetosd = false;
+            Serial.println("Done saving file.");
         }
     }else{
         process_commands();
@@ -255,34 +293,37 @@ void loop()
 #else
     process_commands();
 #endif
-    buflen=(buflen-1);
-    bufindr=(bufindr+1)%BUFSIZE;
+    buflen = (buflen-1);
+    bufindr = (bufindr + 1)%BUFSIZE;
     }
-  
-  manage_heaters();
-  
-  manage_inactivity(1); //shutdown if not receiving any new commands
-}
+  //check heater every n milliseconds
+  if((millis() - previous_millis_heater) >= HEATER_CHECK_INTERVAL ) {
+      manage_heater();
+      previous_millis_heater = millis();
+      
+      manage_inactivity(1);
+    }
+  }
 
 
 inline void get_command() 
 { 
-  while( Serial.available() > 0  && buflen<BUFSIZE) {
-    serial_char=Serial.read();
+  while( Serial.available() > 0  && buflen < BUFSIZE) {
+    serial_char = Serial.read();
     if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) ) 
     {
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
       if(!comment_mode){
-    fromsd[bufindw]=false;
+    fromsd[bufindw] = false;
   if(strstr(cmdbuffer[bufindw], "N") != NULL)
   {
     strchr_pointer = strchr(cmdbuffer[bufindw], 'N');
     gcode_N = (strtol(&cmdbuffer[bufindw][strchr_pointer - cmdbuffer[bufindw] + 1], NULL, 10));
     if(gcode_N != gcode_LastN+1 && (strstr(cmdbuffer[bufindw], "M110") == NULL) ) {
-      Serial.print("Serial Error: N!=(N-1)+1:");
+      Serial.print("Serial Error: Line Number is not Last Line Number+1, Last Line:");
       Serial.println(gcode_LastN);
-      Serial.println(gcode_N);
+      //Serial.println(gcode_N);
       FlushSerialRequestResend();
       serial_count = 0;
       return;
@@ -291,7 +332,7 @@ inline void get_command()
     if(strstr(cmdbuffer[bufindw], "*") != NULL)
     {
       byte checksum = 0;
-      byte count=0;
+      byte count = 0;
       while(cmdbuffer[bufindw][count] != '*') checksum = checksum^cmdbuffer[bufindw][count++];
       strchr_pointer = strchr(cmdbuffer[bufindw], '*');
   
@@ -299,17 +340,17 @@ inline void get_command()
         Serial.print("Error: checksum mismatch, Last Line:");
         Serial.println(gcode_LastN);
         FlushSerialRequestResend();
-        serial_count=0;
+        serial_count = 0;
         return;
       }
       //if no errors, continue parsing
     }
     else 
     {
-      Serial.print("Error: No * with N:");
+      Serial.print("Error: No Checksum with line number, Last Line:");
       Serial.println(gcode_LastN);
       FlushSerialRequestResend();
-      serial_count=0;
+      serial_count = 0;
       return;
     }
     
@@ -320,9 +361,9 @@ inline void get_command()
   {
     if((strstr(cmdbuffer[bufindw], "*") != NULL))
     {
-      Serial.print("Error: No N with *:");
+      Serial.print("Error: No Line Number with checksum, Last Line:");
       Serial.println(gcode_LastN);
-      serial_count=0;
+      serial_count = 0;
       return;
     }
   }
@@ -342,8 +383,8 @@ inline void get_command()
 		}
 
 	}
-        bufindw=(bufindw+1)%BUFSIZE;
-        buflen+=1;
+        bufindw = (bufindw + 1)%BUFSIZE;
+        buflen += 1;
         
       }
       comment_mode = false; //for new command
@@ -359,22 +400,22 @@ inline void get_command()
 if(!sdmode || serial_count!=0){
     return;
 }
-  while( filesize > sdpos  && buflen<BUFSIZE) {
-    n=file.read();
-    serial_char=(char)n;
-    if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) || n==-1) 
+  while( filesize > sdpos  && buflen < BUFSIZE) {
+    n = file.read();
+    serial_char = (char)n;
+    if(serial_char == '\n' || serial_char == '\r' || serial_char == ':' || serial_count >= (MAX_CMD_SIZE - 1) || n == -1) 
     {
-        sdpos=file.curPosition();
-        if(sdpos>=filesize){
-            sdmode=false;
-            Serial.println("SD print done");
+        sdpos = file.curPosition();
+        if(sdpos >= filesize){
+            sdmode = false;
+            Serial.println("Done printing file");
         }
       if(!serial_count) return; //if empty line
       cmdbuffer[bufindw][serial_count] = 0; //terminate string
       if(!comment_mode){
-        fromsd[bufindw]=true;
-        buflen+=1;
-        bufindw=(bufindw+1)%BUFSIZE;
+        fromsd[bufindw] = true;
+        buflen += 1;
+        bufindw = (bufindw + 1)%BUFSIZE;
       }
       comment_mode = false; //for new command
       serial_count = 0; //clear buffer
@@ -400,14 +441,13 @@ inline bool code_seen(char code)
   return (strchr_pointer != NULL);  //Return True if a character was found
 }
  //experimental feedrate calc
-float d=0;
-//float xdiff=0,ydiff=0,zdiff=0,ediff=0;
+float d = 0;
+float xdiff = 0, ydiff = 0, zdiff = 0, ediff = 0;
 
 inline void process_commands()
 {
   unsigned long codenum; //throw away variable
-  unsigned long previous_millis=0;
-  char *starpos=NULL;
+  char *starpos = NULL;
   if(code_seen('G'))
   {
     switch((int)code_value())
@@ -415,50 +455,91 @@ inline void process_commands()
       case 0: // G0 -> G1
       case 1: // G1
         get_coordinates(); // For X Y Z E F
-        linear_move(destination_x,destination_y,destination_z,destination_e); // make the move
+        prepare_move();
+        previous_millis_cmd = millis();
+        //ClearToSend();
         return;
+        //break;
       case 4: // G4 dwell
         codenum = 0;
         if(code_seen('P')) codenum = code_value(); // milliseconds to wait
-        if(code_seen('S')) codenum = code_value()*1000; // seconds to wait
-        previous_millis = millis();  // keep track of when we started waiting
-        while((millis() - previous_millis) < codenum ) manage_heaters(); //manage heater until time is up
+        if(code_seen('S')) codenum = code_value() * 1000; // seconds to wait
+        codenum += millis();  // keep track of when we started waiting
+        while(millis()  < codenum ){
+             if((millis() - previous_millis_heater) >= HEATER_CHECK_INTERVAL ) {
+                manage_heater();
+                previous_millis_heater = millis();
+            }
+        }
         break;
-      case 28: // G28 - reference axes TODO
-        NotHome = true;
-#ifndef PROBING
-        reference_x();
-        reference_y();
-        reference_z();
+      case 28: //G28 Home all Axis one at a time
+        saved_feedrate = feedrate;
+        destination_x = 0;
+        current_x = 0;
+        destination_y = 0;
+        current_y = 0;
+        destination_z = 0;
+        current_z = 0;
+        destination_e = 0;
         current_e = 0;
-#else
-        //fast feed XY to roughly find home
-        feedrate = 1000;
-        linear_move(-(X_MAX_LENGTH + 1), -(Y_MAX_LENGTH + 1), current_z, current_e);
-        current_x = current_y = 0;
-        //back off
-        linear_move(1, 1, current_z, current_e);
-        //low feed home X
-        feedrate = 100;
-        linear_move(-1, current_y, current_z, current_e);
-        current_x = (code_seen('X')) ? code_value() : 0;
-        //low feed home Y
-        linear_move(current_x, -1, current_z, current_e);
-        current_y = (code_seen('Y')) ? code_value() : 0;
-        feedrate = 1500;
-        NotHome = false;
-        //move to centre of build surface ready to probe Z
-        linear_move(Z_HOME_X,Z_HOME_Y,current_z,current_e);
-        //probe Z
-        probe_z(-1);
-        current_z = (code_seen('Z')) ? code_value() : 0;
-        feedrate = 1500;
-        break;
-      case 31: //probe
-        NotHome = true;
-        if(code_seen('Z')) probe_z(code_value());
-#endif
-        NotHome = false;
+        feedrate = 0;
+
+        if(X_MIN_PIN > -1) {
+          current_x = 0;
+          destination_x = -1.5 * X_MAX_LENGTH;
+          feedrate = min_units_per_second * 60;
+          prepare_move();
+          
+          current_x = 0;
+          destination_x = 1;
+          prepare_move();
+          
+          destination_x = -10;
+          prepare_move();
+          
+          current_x = 0;
+          destination_x = 0;
+          feedrate = 0;
+        }
+        
+        if(Y_MIN_PIN > -1) {
+          current_y = 0;
+          destination_y = -1.5 * Y_MAX_LENGTH;
+          feedrate = min_units_per_second * 60;
+          prepare_move();
+          
+          current_y = 0;
+          destination_y = 1;
+          prepare_move();
+          
+          destination_y = -10;
+          prepare_move();
+          
+          current_y = 0;
+          destination_y = 0;
+          feedrate = 0;
+        }
+        
+        if(Z_MIN_PIN > -1) {
+          current_z = 0;
+          destination_z = -1.5 * Z_MAX_LENGTH;
+          feedrate = max_z_feedrate/2;
+          prepare_move();
+          
+          current_z = 0;
+          destination_z = 1;
+          prepare_move();
+          
+          destination_z = -10;
+          prepare_move();
+          
+          current_z = 0;
+          destination_z = 0;
+          feedrate = 0;
+        }
+        
+        feedrate = saved_feedrate;
+        previous_millis_cmd = millis();
         break;
       case 90: // G90
         relative_mode = false;
@@ -467,23 +548,10 @@ inline void process_commands()
         relative_mode = true;
         break;
       case 92: // G92
-        if(code_seen('X')){
-          current_x = code_value();
-          break;
-        }
-        if(code_seen('Y')){
-          current_y = code_value();
-          break;
-        }
-        if(code_seen('Z')){
-          current_z = code_value();
-          break;
-        }
-        if(code_seen('E')){
-          current_e = code_value();
-          break;
-        }
-        current_x = current_y = current_z = current_e = 0;
+        if(code_seen('X')) current_x = code_value();
+        if(code_seen('Y')) current_y = code_value();
+        if(code_seen('Z')) current_z = code_value();
+        if(code_seen('E')) current_e = code_value();
         break;
         
     }
@@ -502,27 +570,27 @@ inline void process_commands()
         Serial.println("End file list");
         break;
       case 21: // M21 - init SD card
-        sdmode=false;
+        sdmode = false;
         initsd();
         break;
       case 22: //M22 - release SD card
-        sdmode=false;
-        sdactive=false;
+        sdmode = false;
+        sdactive = false;
         break;
       case 23: //M23 - Select file
         if(sdactive){
-            sdmode=false;
+            sdmode = false;
             file.close();
-            starpos=(strchr(strchr_pointer+4,'*'));
+            starpos = (strchr(strchr_pointer + 4,'*'));
             if(starpos!=NULL)
                 *(starpos-1)='\0';
-            if (file.open(&root, strchr_pointer+4, O_READ)) {
+            if (file.open(&root, strchr_pointer + 4, O_READ)) {
                 Serial.print("File opened:");
-                Serial.print(strchr_pointer+4);
+                Serial.print(strchr_pointer + 4);
                 Serial.print(" Size:");
                 Serial.println(file.fileSize());
-                sdpos=0;
-                filesize=file.fileSize();
+                sdpos = 0;
+                filesize = file.fileSize();
                 Serial.println("File selected");
             }
             else{
@@ -532,17 +600,17 @@ inline void process_commands()
         break;
       case 24: //M24 - Start SD print
         if(sdactive){
-            sdmode=true;
+            sdmode = true;
         }
         break;
       case 25: //M25 - Pause SD print
         if(sdmode){
-            sdmode=false;
+            sdmode = false;
         }
         break;
       case 26: //M26 - Set SD index
         if(sdactive && code_seen('S')){
-            sdpos=code_value_long();
+            sdpos = code_value_long();
             file.seekSet(sdpos);
         }
         break;
@@ -556,125 +624,131 @@ inline void process_commands()
             Serial.println("Not SD printing");
         }
         break;
-      case 28: //M28 - Start SD write
+            case 28: //M28 - Start SD write
         if(sdactive){
-          char* npos=0;
+          char* npos = 0;
             file.close();
-            sdmode=false;
-            starpos=(strchr(strchr_pointer+4,'*'));
-            if(starpos!=NULL){
-              npos=strchr(cmdbuffer[bufindr], 'N');
-              strchr_pointer = strchr(npos,' ')+1;
-                *(starpos-1)='\0';
+            sdmode = false;
+            starpos = (strchr(strchr_pointer + 4,'*'));
+            if(starpos != NULL){
+              npos = strchr(cmdbuffer[bufindr], 'N');
+              strchr_pointer = strchr(npos,' ') + 1;
+              *(starpos-1) = '\0';
             }
-            if (!file.open(&root, strchr_pointer+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
+      if (!file.open(&root, strchr_pointer+4, O_CREAT | O_APPEND | O_WRITE | O_TRUNC))
             {
-            Serial.print("open failed: ");
-            Serial.print(strchr_pointer+4);
+            Serial.print("open failed, File: ");
+            Serial.print(strchr_pointer + 4);
             Serial.print(".");
             }else{
             savetosd = true;
             Serial.print("Writing to file: ");
-            Serial.println(strchr_pointer+4);
+            Serial.println(strchr_pointer + 4);
             }
-        }else{
-          Serial.println("SD !active");
         }
         break;
       case 29: //M29 - Stop SD write
         //processed in write to file routine above
-        //savetosd=false;
+        //savetosd = false;
         break;
 #endif
-      case 104: // M104 - set nozzle temp
-        if (code_seen('S'))
-         {
-#ifdef THERMOCOUPLE
-           nozzle_targ = code_value() * TEMP_MULTIPLIER;
-#else
-           nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
-#endif
-         }
+      case 104: // M104
+        if (code_seen('S')) target_raw = temp2analog(code_value());
+        #ifdef WATCHPERIOD
+            if(target_raw > current_raw){
+                watchmillis = max(1,millis());
+                watch_raw = current_raw;
+            }else{
+                watchmillis = 0;
+            }
+        #endif
         break;
-      case 140: // M140 - set bed temp
-        if (code_seen('S')) bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
+      case 140: // M140 set bed temp
+        if (code_seen('S')) target_bed_raw = temp2analogBed(code_value());
         break;
-      case 105: // M105 - report temps
-        Serial.print("T:");
-#ifdef THERMOCOUPLE
-#define NOZZLE_OUT nozzle_curr / TEMP_MULTIPLIER
-#else
-#define NOZZLE_OUT analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS)
-#endif
-        Serial.print( NOZZLE_OUT );
-        Serial.print(" B:");
-        Serial.println( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
+      case 105: // M105
+        #if (TEMP_0_PIN > -1) || defined (HEATER_USES_MAX6675)
+          tt = analog2temp(current_raw);
+        #endif
+        #if TEMP_1_PIN > -1
+          bt = analog2tempBed(current_bed_raw);
+        #endif
+        #if (TEMP_0_PIN > -1) || defined (HEATER_USES_MAX6675)
+          Serial.print("T:");
+          Serial.println(tt); 
+          #if TEMP_1_PIN > -1
+        
+            Serial.print("ok T:");
+            Serial.print(tt); 
+            Serial.print(" B:");
+            Serial.println(bt); 
+          #endif
+        #else
+          Serial.println("No thermistors - no temp");
+        #endif
         return;
-      case 109: // M109 - Wait for nozzle to reach target temp
-        if (code_seen('S'))
-        {
-#ifdef THERMOCOUPLE
-          nozzle_targ = code_value() * TEMP_MULTIPLIER;
-          previous_millis = millis(); 
-          while(nozzle_curr < (nozzle_targ - NZONE * TEMP_MULTIPLIER))
-          {
-            if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
-            {
-              Serial.print("T:");
-              Serial.print( nozzle_curr / TEMP_MULTIPLIER ); 
-              Serial.print(" / ");
-              Serial.println( nozzle_targ / TEMP_MULTIPLIER ); 
-              previous_millis = millis(); 
+        //break;
+      case 109: // M109 - Wait for extruder heater to reach target.
+        if (code_seen('S')) target_raw = temp2analog(code_value());
+        #ifdef WATCHPERIOD
+            if(target_raw>current_raw){
+                watchmillis = max(1,millis());
+                watch_raw = current_raw;
+            }else{
+                watchmillis = 0;
             }
-            manage_heaters();
-          }
-#else
-          nozzle_targ = temp2analog(code_value(), _thNTempTable, nNUMTEMPS);
-          previous_millis = millis(); 
-          while(nozzle_curr < (nozzle_targ - NZONE))
+        #endif
+        codenum = millis(); 
+        while(current_raw < target_raw) {
+          if( (millis() - codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
           {
-            if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
-            {
-              Serial.print("T:");
-              Serial.print( analog2temp(nozzle_curr, _thNTempTable, nNUMTEMPS) ); 
-              Serial.print(" / ");
-              Serial.println( analog2temp(nozzle_targ, _thNTempTable, nNUMTEMPS) ); 
-              previous_millis = millis(); 
-            }
-            manage_heaters();
+            Serial.print("T:");
+            Serial.println( analog2temp(current_raw) ); 
+            codenum = millis(); 
           }
-#endif
+          if((millis() - previous_millis_heater) >= HEATER_CHECK_INTERVAL ) {
+            manage_heater();
+            previous_millis_heater = millis();
+          }
         }
         break;
-      case 190: // M190 - Wait for bed to reach target temp
-        if (code_seen('S'))
-         {
-           bed_targ = temp2analog(code_value(), _thTempTable, bNUMTEMPS);
-           previous_millis = millis(); 
-           while(bed_curr < bed_targ)
-           {
-             if( (millis()-previous_millis) > 1000 ) //Print Temp Reading every 1 second while heating up.
-             {
-               Serial.print("B:");
-               Serial.print( analog2temp(bed_curr, _thTempTable, bNUMTEMPS) ); 
-               Serial.print(" / ");
-               Serial.println( analog2temp(bed_targ, _thTempTable, bNUMTEMPS) ); 
-               previous_millis = millis(); 
-             }
-             manage_heaters();
-           }
-         }
-        break;
-      case 106: //M106 Ss Fan On
-        if(code_seen('S'))
-        {
-          analogWrite(FAN_PIN, constrain(code_value(),0,255));
+      case 190: // M190 - Wait bed for heater to reach target.
+      #if TEMP_1_PIN > -1
+        if (code_seen('S')) target_bed_raw = temp2analog(code_value());
+        codenum = millis(); 
+        while(current_bed_raw < target_bed_raw) {
+          if( (millis()-codenum) > 1000 ) //Print Temp Reading every 1 second while heating up.
+          {
+            tt=analog2temp(current_raw);
+            Serial.print("T:");
+            Serial.println( tt );
+            Serial.print("ok T:");
+            Serial.print( tt ); 
+            Serial.print(" B:");
+            Serial.println( analog2temp(current_bed_raw) ); 
+            codenum = millis(); 
+          }
+          if((millis() - previous_millis_heater) >= HEATER_CHECK_INTERVAL ) {
+            manage_heater();
+            previous_millis_heater = millis();
+          }
         }
+      #endif
+      break;
+      case 106: //M106 Fan On
+        if (code_seen('S')){
+            digitalWrite(FAN_PIN, HIGH);
+            analogWrite(FAN_PIN, constrain(code_value(),0,255) );
+        }
+        else
+            digitalWrite(FAN_PIN, HIGH);
         break;
       case 107: //M107 Fan Off
+        analogWrite(FAN_PIN, 0);
+        
         digitalWrite(FAN_PIN, LOW);
         break;
-/*      case 80: // M81 - ATX Power On
+      case 80: // M81 - ATX Power On
         if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,OUTPUT); //GND
         break;
       case 81: // M81 - ATX Power Off
@@ -686,124 +760,62 @@ inline void process_commands()
       case 83:
         relative_mode_e = true;
         break;
-*/      case 84:
-        disable_x();
-        disable_y();
-        disable_z();
-        disable_e();
+      case 84:
+        if(code_seen('S')){ stepper_inactive_time = code_value() * 1000; }
+        else{ disable_x(); disable_y(); disable_z(); disable_e(); }
         break;
-/*      case 85: // M85
+      case 85: // M85
         code_seen('S');
-        max_inactive_time = code_value()*1000; 
-        break;
-      case 86: // M86 If Endstop is Not Activated then Abort Print
-        if(code_seen('X')) if( digitalRead(X_MIN_PIN) == ENDSTOPS_INVERTING ) kill(3);
-        if(code_seen('Y')) if( digitalRead(Y_MIN_PIN) == ENDSTOPS_INVERTING ) kill(4);
+        max_inactive_time = code_value() * 1000; 
         break;
       case 92: // M92
         if(code_seen('X')) x_steps_per_unit = code_value();
         if(code_seen('Y')) y_steps_per_unit = code_value();
         if(code_seen('Z')) z_steps_per_unit = code_value();
         if(code_seen('E')) e_steps_per_unit = code_value();
-        break;*/
+        break;
       case 115: // M115
-        Serial.println("FIRMWARE_NAME:jmgsprint FIRMWARE_URL:https://github.com/jmgiacalone/Tonokip-Firmware PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1");
+        Serial.println("FIRMWARE_NAME:Sprinter FIRMWARE_URL:http%%3A/github.com/kliment/Sprinter/ PROTOCOL_VERSION:1.0 MACHINE_TYPE:Mendel EXTRUDER_COUNT:1");
         break;
+
       case 114: // M114
-        Serial.print( "X" );
-        Serial.print( current_x );
-        Serial.print( " Y" );
-        Serial.print( current_y );
-        Serial.print( " Z" );
-        Serial.print( current_z );
-/*        Serial.print( " E" );
-        Serial.print( current_e );*/
-        Serial.print( " F" );
-        Serial.println( feedrate );
-        return;
-      case 201: // M201
-        if(code_seen('A')){
-          Serial.print("mm/s^2 was "); Serial.println(max_acceleration_units_per_sq_second);
-          max_acceleration_units_per_sq_second = code_value();
-          x_steps_per_sqr_second = max_acceleration_units_per_sq_second * x_steps_per_unit;
-          y_steps_per_sqr_second = max_acceleration_units_per_sq_second * y_steps_per_unit;
-          e_steps_per_sqr_second = max_acceleration_units_per_sq_second * e_steps_per_unit;
-          Serial.print("mm/s^2 now "); Serial.println(max_acceleration_units_per_sq_second);
-        }
+	Serial.print("X:");
+        Serial.print(current_x);
+	Serial.print("Y:");
+        Serial.print(current_y);
+	Serial.print("Z:");
+        Serial.print(current_z);
+	Serial.print("E:");
+        Serial.println(current_e);
         break;
+      #ifdef RAMP_ACCELERATION
+      case 201: // M201
+        if(code_seen('X')) x_steps_per_sqr_second = code_value() * x_steps_per_unit;
+        if(code_seen('Y')) y_steps_per_sqr_second = code_value() * y_steps_per_unit;
+        break;
+      case 202: // M202
+        if(code_seen('X')) x_travel_steps_per_sqr_second = code_value() * x_steps_per_unit;
+        if(code_seen('Y')) y_travel_steps_per_sqr_second = code_value() * y_steps_per_unit;
+        break;
+      #endif
     }
-  }else if(code_seen('X') || code_seen('Y') || code_seen('Z') || code_seen('E') || code_seen('F'))
-  {
-    get_coordinates(); // For X Y Z E F
-    linear_move(destination_x,destination_y,destination_z,destination_e);    
-  }else{
-    Serial.println("?:");
-    Serial.println(cmdbuffer[bufindr]);
+    
   }
+  else{
+      Serial.println("Unknown command:");
+      Serial.println(cmdbuffer[bufindr]);
+  }
+  
   ClearToSend();
       
 }
-#ifndef PROBING
-inline void reference_x()
-{
-        feedrate = 1000;
-        linear_move(-(X_MAX_LENGTH + 1), current_y, current_z, current_e);
-        current_x = 0;
-        linear_move(1, current_y, current_z, current_e);
-        feedrate = 100;
-        linear_move(-1, current_y, current_z, current_e);
-        current_x = 0;
-        feedrate = 1500;
-}
-inline void reference_y()
-{
-        feedrate = 1000;
-        linear_move(current_x, -(Y_MAX_LENGTH + 1), current_z, current_e);
-        current_y = 0;
-        linear_move(current_x, 1, current_z, current_e);
-        feedrate = 100;
-        linear_move(current_x, -1, current_z, current_e);
-        current_y = 0;
-        feedrate = 1500;
-}
-inline void reference_z()
-{
-  feedrate = 100;
-  linear_move(current_x, current_y, -(Z_MAX_LENGTH + 2), current_e);
-  current_z = 0;
-  linear_move(current_x, current_y, 1, current_e);
-  linear_move(current_x, current_y, -1, current_e);
-  current_z = 0;
-  feedrate = 1500;
-}
-#else
-void probe_z(float dest_z)
-{
-  float start_z = current_z;
-  //check probe is down
-  if(digitalRead(PROBE_PIN)==1) {
-    Serial.println("Err:probe open");
-  }else{
-    //find surface
-    feedrate = 100;
-    while(digitalRead(PROBE_PIN)==1 && current_z > dest_z) {
-      linear_move(current_x,current_y,current_z-0.1,current_e);
-    }
-    //back off until probe contact makes
-    feedrate = 50;
-    while(digitalRead(PROBE_PIN)==0 && current_z < start_z) {
-      linear_move(current_x,current_y,current_z+0.01,current_e);
-    }
-    Serial.println(current_z);
-  }
-}
-#endif
+
 inline void FlushSerialRequestResend()
 {
   //char cmdbuffer[bufindr][100]="Resend:";
   Serial.flush();
   Serial.print("Resend:");
-  Serial.println(gcode_LastN+1);
+  Serial.println(gcode_LastN + 1);
   ClearToSend();
 }
 
@@ -829,11 +841,24 @@ inline void get_coordinates()
   else destination_e = current_e;
   if(code_seen('F')) {
     next_feedrate = code_value();
-    if(next_feedrate > 0.0) feedrate = min(next_feedrate,RAPID_XY);
+    if(next_feedrate > 0.0) feedrate = next_feedrate;
   }
+}
+
+inline void prepare_move()
+{
+  //Find direction
+  if(destination_x >= current_x) direction_x = 1;
+  else direction_x = 0;
+  if(destination_y >= current_y) direction_y = 1;
+  else direction_y = 0;
+  if(destination_z >= current_z) direction_z = 1;
+  else direction_z = 0;
+  if(destination_e >= current_e) direction_e = 1;
+  else direction_e = 0;
   
   
-  if (min_software_endstops && !NotHome) {
+  if (min_software_endstops) {
     if (destination_x < 0) destination_x = 0.0;
     if (destination_y < 0) destination_y = 0.0;
     if (destination_z < 0) destination_z = 0.0;
@@ -844,187 +869,224 @@ inline void get_coordinates()
     if (destination_y > Y_MAX_LENGTH) destination_y = Y_MAX_LENGTH;
     if (destination_z > Z_MAX_LENGTH) destination_z = Z_MAX_LENGTH;
   }
-  if(code_seen('Z') && feedrate > RAPID_Z) {
-    feedrate = RAPID_Z;
+  
+  if(feedrate > max_feedrate) feedrate = max_feedrate;
+
+  if(feedrate > max_z_feedrate) z_feedrate = max_z_feedrate;
+  else z_feedrate = feedrate;
+  
+  xdiff = (destination_x - current_x);
+  ydiff = (destination_y - current_y);
+  zdiff = (destination_z - current_z);
+  ediff = (destination_e - current_e);
+  x_steps_to_take = abs(xdiff) * x_steps_per_unit;
+  y_steps_to_take = abs(ydiff) * y_steps_per_unit;
+  z_steps_to_take = abs(zdiff) * z_steps_per_unit;
+  e_steps_to_take = abs(ediff) * e_steps_per_unit;
+  if(feedrate < 10)
+      feedrate = 10;
+  /*
+  //experimental feedrate calc
+  if(abs(xdiff) > 0.1 && abs(ydiff) > 0.1)
+      d = sqrt(xdiff * xdiff + ydiff * ydiff);
+  else if(abs(xdiff) > 0.1)
+      d = abs(xdiff);
+  else if(abs(ydiff) > 0.1)
+      d = abs(ydiff);
+  else if(abs(zdiff) > 0.05)
+      d = abs(zdiff);
+  else if(abs(ediff) > 0.1)
+      d = abs(ediff);
+  else d = 1; //extremely slow move, should be okay for moves under 0.1mm
+  time_for_move = (xdiff / (feedrate / 60000000) );
+  //time = 60000000 * dist / feedrate
+  //int feedz = (60000000 * zdiff) / time_for_move;
+  //if(feedz > maxfeed)
+  */
+  #define X_TIME_FOR_MOVE ((float)x_steps_to_take / (x_steps_per_unit*feedrate/60000000))
+  #define Y_TIME_FOR_MOVE ((float)y_steps_to_take / (y_steps_per_unit*feedrate/60000000))
+  #define Z_TIME_FOR_MOVE ((float)z_steps_to_take / (z_steps_per_unit*z_feedrate/60000000))
+  #define E_TIME_FOR_MOVE ((float)e_steps_to_take / (e_steps_per_unit*feedrate/60000000))
+  
+  time_for_move = max(X_TIME_FOR_MOVE, Y_TIME_FOR_MOVE);
+  time_for_move = max(time_for_move, Z_TIME_FOR_MOVE);
+  if(time_for_move <= 0) time_for_move = max(time_for_move, E_TIME_FOR_MOVE);
+
+  if(x_steps_to_take) x_interval = time_for_move / x_steps_to_take * 100;
+  if(y_steps_to_take) y_interval = time_for_move / y_steps_to_take * 100;
+  if(z_steps_to_take) z_interval = time_for_move / z_steps_to_take * 100;
+  if(e_steps_to_take && (x_steps_to_take + y_steps_to_take <= 0) ) e_interval = time_for_move / e_steps_to_take * 100;
+  
+  //#define DEBUGGING false
+  #if 0        
+  if(0) {
+    Serial.print("destination_x: "); Serial.println(destination_x); 
+    Serial.print("current_x: "); Serial.println(current_x); 
+    Serial.print("x_steps_to_take: "); Serial.println(x_steps_to_take); 
+    Serial.print("X_TIME_FOR_MVE: "); Serial.println(X_TIME_FOR_MOVE); 
+    Serial.print("x_interval: "); Serial.println(x_interval); 
+    Serial.println("");
+    Serial.print("destination_y: "); Serial.println(destination_y); 
+    Serial.print("current_y: "); Serial.println(current_y); 
+    Serial.print("y_steps_to_take: "); Serial.println(y_steps_to_take); 
+    Serial.print("Y_TIME_FOR_MVE: "); Serial.println(Y_TIME_FOR_MOVE); 
+    Serial.print("y_interval: "); Serial.println(y_interval); 
+    Serial.println("");
+    Serial.print("destination_z: "); Serial.println(destination_z); 
+    Serial.print("current_z: "); Serial.println(current_z); 
+    Serial.print("z_steps_to_take: "); Serial.println(z_steps_to_take); 
+    Serial.print("Z_TIME_FOR_MVE: "); Serial.println(Z_TIME_FOR_MOVE); 
+    Serial.print("z_interval: "); Serial.println(z_interval); 
+    Serial.println("");
+    Serial.print("destination_e: "); Serial.println(destination_e); 
+    Serial.print("current_e: "); Serial.println(current_e); 
+    Serial.print("e_steps_to_take: "); Serial.println(e_steps_to_take); 
+    Serial.print("E_TIME_FOR_MVE: "); Serial.println(E_TIME_FOR_MOVE); 
+    Serial.print("e_interval: "); Serial.println(e_interval); 
+    Serial.println("");
   }
+  #endif
+  
+  linear_move(x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take); // make the move
 }
 
-void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make linear move with preset speeds and destinations, see G0 and G1
+void linear_move(unsigned long x_steps_remaining, unsigned long y_steps_remaining, unsigned long z_steps_remaining, unsigned long e_steps_remaining) // make linear move with preset speeds and destinations, see G0 and G1
 {
-  unsigned long x_steps_remaining, y_steps_remaining, z_steps_remaining, e_steps_remaining;
-  unsigned long x_steps_to_take, y_steps_to_take, z_steps_to_take, e_steps_to_take;
-        x_steps_to_take = x_steps_remaining = abs(dest_x - current_x)*x_steps_per_unit;//11200 for 140mm move
-        y_steps_to_take = y_steps_remaining = abs(dest_y - current_y)*y_steps_per_unit;
-        z_steps_to_take = z_steps_remaining = abs(dest_z - current_z)*z_steps_per_unit;
-        e_steps_to_take = e_steps_remaining = abs(dest_e)*e_steps_per_unit;//11294.7432 for 15.6mm move
-        if(feedrate<10)
-            feedrate=10;
-        #define X_TIME_FOR_MOVE ((float)x_steps_remaining / (x_steps_per_unit*feedrate/60000000))//11200/(80*3000/60000000)=2800000
-        #define Y_TIME_FOR_MOVE ((float)y_steps_remaining / (y_steps_per_unit*feedrate/60000000))
-        #define Z_TIME_FOR_MOVE ((float)z_steps_remaining / (z_steps_per_unit*feedrate/60000000))
-        #define E_TIME_FOR_MOVE ((float)e_steps_remaining / (e_steps_per_unit*feedrate/60000000))//11294/(724.022*3000/60000000)=311979.470237092
-        
-        time_for_move = max(X_TIME_FOR_MOVE,Y_TIME_FOR_MOVE);//2800
-        time_for_move = max(time_for_move,Z_TIME_FOR_MOVE);
-        //if(time_for_move <= 0) time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
-        time_for_move = max(time_for_move,E_TIME_FOR_MOVE);
-
-        if(x_steps_remaining) x_interval = time_for_move/x_steps_remaining*100;//2800000/8000=350
-        if(y_steps_remaining) y_interval = time_for_move/y_steps_remaining*100;
-        if(z_steps_remaining) z_interval = time_for_move/z_steps_remaining*100;
-        if(e_steps_remaining) e_interval = time_for_move/e_steps_remaining*100;
-        
-	#if DEBUG == 1       
-          Serial.print("destination_x: "); Serial.println(dest_x); 
-          Serial.print("current_x: "); Serial.println(current_x); 
-          Serial.print("x_steps_to_take: "); Serial.println(x_steps_remaining); 
-          Serial.print("X_TIME_FOR_MVE: "); Serial.println(X_TIME_FOR_MOVE); 
-          Serial.print("x_interval: "); Serial.println(x_interval); 
-          Serial.println("");
-          Serial.print("destination_y: "); Serial.println(dest_y); 
-          Serial.print("current_y: "); Serial.println(current_y); 
-          Serial.print("y_steps_to_take: "); Serial.println(y_steps_remaining); 
-          Serial.print("Y_TIME_FOR_MVE: "); Serial.println(Y_TIME_FOR_MOVE); 
-          Serial.print("y_interval: "); Serial.println(y_interval); 
-          Serial.println("");
-          Serial.print("destination_z: "); Serial.println(dest_z); 
-          Serial.print("current_z: "); Serial.println(current_z); 
-          Serial.print("z_steps_to_take: "); Serial.println(z_steps_remaining); 
-          Serial.print("Z_TIME_FOR_MVE: "); Serial.println(Z_TIME_FOR_MOVE); 
-          Serial.print("z_interval: "); Serial.println(z_interval); 
-          Serial.println("");
-          Serial.print("destination_e: "); Serial.println(dest_e); 
-          Serial.print("current_e: "); Serial.println(current_e); 
-          Serial.print("e_steps_to_take: "); Serial.println(e_steps_remaining); 
-          Serial.print("E_TIME_FOR_MVE: "); Serial.println(E_TIME_FOR_MOVE); 
-          Serial.print("e_interval: "); Serial.println(e_interval); 
-          Serial.println("");
-        #endif
   //Determine direction of movement
-  //Find and set direction
-  if(dest_x >= current_x){
-    direction_x=1;
-    digitalWrite(X_DIR_PIN,!INVERT_X_DIR);
-  }else{
-    direction_x=0;
-    digitalWrite(X_DIR_PIN,INVERT_X_DIR);
-  }
-  if(dest_y >= current_y){
-    direction_y=1;
-    digitalWrite(Y_DIR_PIN,!INVERT_Y_DIR);
-  }else{
-    direction_y=0;
-    digitalWrite(Y_DIR_PIN,INVERT_Y_DIR);
-  }
-  if(dest_z >= current_z){
-    direction_z=1;
-    digitalWrite(Z_DIR_PIN,!INVERT_Z_DIR);
-  }else{
-    direction_z=0;
-    digitalWrite(Z_DIR_PIN,INVERT_Z_DIR);
-  }
-  if(dest_e >= current_e){
-    direction_e=1;
-    digitalWrite(E_DIR_PIN,!INVERT_E_DIR);
-  }else{
-    direction_e=0;
-    digitalWrite(E_DIR_PIN,INVERT_E_DIR);
-  }
+  if (destination_x > current_x) digitalWrite(X_DIR_PIN,!INVERT_X_DIR);
+  else digitalWrite(X_DIR_PIN,INVERT_X_DIR);
+  if (destination_y > current_y) digitalWrite(Y_DIR_PIN,!INVERT_Y_DIR);
+  else digitalWrite(Y_DIR_PIN,INVERT_Y_DIR);
+  if (destination_z > current_z) digitalWrite(Z_DIR_PIN,!INVERT_Z_DIR);
+  else digitalWrite(Z_DIR_PIN,INVERT_Z_DIR);
+  if (destination_e > current_e) digitalWrite(E_DIR_PIN,!INVERT_E_DIR);
+  else digitalWrite(E_DIR_PIN,INVERT_E_DIR);
+  
+  if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
+  if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+  if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+  if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
+  if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+  if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
+  
   
   //Only enable axis that are moving. If the axis doesn't need to move then it can stay disabled depending on configuration.
   if(x_steps_remaining) enable_x();
   if(y_steps_remaining) enable_y();
-  if(z_steps_remaining) { enable_z(); do_z_step(); z_steps_remaining--;}
-  if(e_steps_remaining) enable_e();
+  if(z_steps_remaining) { enable_z(); do_z_step(); z_steps_remaining--; }
+  if(e_steps_remaining) { enable_e(); do_e_step(); e_steps_remaining--; }
+
   
-  if(NotHome)
-  {
-  if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-  if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
-  if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
-  }  
+  previous_millis_heater = millis();
   
-  //unsigned long start_move_micros = micros(); 
+  //Define variables that are needed for the Bresenham algorithm. Please note that  Z is not currently included in the Bresenham algorithm.
   unsigned int delta_x = x_steps_remaining;
-  //unsigned long x_interval_nanos;
+  unsigned long x_interval_nanos;
   unsigned int delta_y = y_steps_remaining;
-  //unsigned long y_interval_nanos;
-  unsigned int delta_e = e_steps_remaining;
-  //unsigned long e_interval_nanos;
+  unsigned long y_interval_nanos;
   unsigned int delta_z = z_steps_remaining;
-  //unsigned long z_interval_nanos;
-  //long interval;
-  boolean steep_y = delta_y > delta_x && delta_y >= delta_e;// && delta_y > delta_z;
-  boolean steep_x = delta_x >= delta_y && delta_x >= delta_e;// && delta_x > delta_z;
-  boolean steep_e = delta_e > delta_x && delta_e > delta_y;
-  
+  unsigned long z_interval_nanos;
+  boolean steep_y = delta_y > delta_x;// && delta_y > delta_e && delta_y > delta_z;
+  boolean steep_x = delta_x >= delta_y;// && delta_x > delta_e && delta_x > delta_z;
   //boolean steep_z = delta_z > delta_x && delta_z > delta_y && delta_z > delta_e;
   int error_x;
   int error_y;
   int error_z;
-  int error_e;
+  #ifdef RAMP_ACCELERATION
   long max_speed_steps_per_second;
   long min_speed_steps_per_second;
+  #endif
+  #ifdef EXP_ACCELERATION
+  unsigned long virtual_full_velocity_steps;
+  unsigned long full_velocity_steps;
+  #endif
   unsigned long steps_remaining;
   unsigned long steps_to_take;
   
   //Do some Bresenham calculations depending on which axis will lead it.
   if(steep_y) {
    error_x = delta_y / 2;
-   error_e = delta_y / 2;
-   previous_micros_y=micros()*100;
    interval = y_interval;
+   #ifdef RAMP_ACCELERATION
    max_interval = max_y_interval;
-   steps_per_sqr_second = y_steps_per_sqr_second;
+   if(e_steps_to_take > 0) steps_per_sqr_second = y_steps_per_sqr_second;
+   else steps_per_sqr_second = y_travel_steps_per_sqr_second;
    max_speed_steps_per_second = 100000000 / interval;
    min_speed_steps_per_second = 100000000 / max_interval;
    float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
    plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
+   #endif
+   #ifdef EXP_ACCELERATION
+   if(e_steps_to_take > 0) virtual_full_velocity_steps = long_full_velocity_units * y_steps_per_unit /100;
+   else virtual_full_velocity_steps = long_travel_move_full_velocity_units * y_steps_per_unit /100;
+   full_velocity_steps = min(virtual_full_velocity_steps, (delta_y - y_min_constant_speed_steps) / 2);
+   max_interval = max_y_interval;
+   min_constant_speed_steps = y_min_constant_speed_steps;
+   #endif
    steps_remaining = delta_y;
    steps_to_take = delta_y;
   } else if (steep_x) {
    error_y = delta_x / 2;
-   error_e = delta_x / 2;
-   previous_micros_x=micros()*100;
    interval = x_interval;
+   #ifdef RAMP_ACCELERATION
    max_interval = max_x_interval;
-   steps_per_sqr_second = x_steps_per_sqr_second;
+   if(e_steps_to_take > 0) steps_per_sqr_second = x_steps_per_sqr_second;
+   else steps_per_sqr_second = x_travel_steps_per_sqr_second;
    max_speed_steps_per_second = 100000000 / interval;
    min_speed_steps_per_second = 100000000 / max_interval;
    float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
    plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
+   #endif
+   #ifdef EXP_ACCELERATION
+   if(e_steps_to_take > 0) virtual_full_velocity_steps = long_full_velocity_units * x_steps_per_unit /100;
+   else virtual_full_velocity_steps = long_travel_move_full_velocity_units * x_steps_per_unit /100;
+   full_velocity_steps = min(virtual_full_velocity_steps, (delta_x - x_min_constant_speed_steps) / 2);
+   max_interval = max_x_interval;
+   min_constant_speed_steps = x_min_constant_speed_steps;
+   #endif
    steps_remaining = delta_x;
    steps_to_take = delta_x;
-  } else if (steep_e) {
-   error_y = delta_e / 2;
-   error_x = delta_e / 2;
-   previous_micros_e=micros()*100;
-   interval = e_interval;
-   max_interval = max_e_interval;
-   steps_per_sqr_second = e_steps_per_sqr_second;
-   max_speed_steps_per_second = 100000000 / interval;
-   min_speed_steps_per_second = 100000000 / max_interval;
-   float plateau_time = (max_speed_steps_per_second - min_speed_steps_per_second) / (float) steps_per_sqr_second;
-   plateau_steps = (long) ((steps_per_sqr_second / 2.0 * plateau_time + min_speed_steps_per_second) * plateau_time);
-   steps_remaining = delta_e;
-   steps_to_take = delta_e;
   }
-  previous_micros_z=micros()*100;
   unsigned long steps_done = 0;
-    plateau_steps *= 1.01; // This is to compensate we use discrete intervals
+  #ifdef RAMP_ACCELERATION
+  plateau_steps *= 1.01; // This is to compensate we use discrete intervals
   acceleration_enabled = true;
   long full_interval = interval;
   if(interval > max_interval) acceleration_enabled = false;
   boolean decelerating = false;
+  #endif
+  #ifdef EXP_ACCELERATION
+  acceleration_enabled = true;
+  if(full_velocity_steps == 0) full_velocity_steps++;
+  if(interval > max_interval) acceleration_enabled = false;
+  unsigned long full_interval = interval;
+  if(min_constant_speed_steps >= steps_to_take) {
+    acceleration_enabled = false;
+    full_interval = max(max_interval, interval); // choose the min speed between feedrate and acceleration start speed
+  }
+  if(full_velocity_steps < virtual_full_velocity_steps && acceleration_enabled) full_interval = max(interval,
+      max_interval - ((max_interval - full_interval) * full_velocity_steps / virtual_full_velocity_steps)); // choose the min speed between feedrate and speed at full steps
+  unsigned int steps_acceleration_check = 1;
+  accelerating = acceleration_enabled;
+  #endif
+  
   unsigned long start_move_micros = micros();
-  previous_micros_x=start_move_micros*100;
-  previous_micros_y=previous_micros_x;
-  previous_micros_z=previous_micros_x;
-  previous_micros_e=previous_micros_x;
-
-  // move until no more steps remain 
-  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) { 
-        //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
+  previous_micros_x = start_move_micros*100;
+  previous_micros_y = previous_micros_x;
+  previous_micros_z = previous_micros_x;
+  previous_micros_e = previous_micros_x;
+  
+  //move until no more steps remain 
+  while(x_steps_remaining + y_steps_remaining + z_steps_remaining + e_steps_remaining > 0) {
+    //If more that HEATER_CHECK_INTERVAL ms have passed since previous heating check, adjust temp
+    if((millis() - previous_millis_heater) >= HEATER_CHECK_INTERVAL ) {
+      manage_heater();
+      previous_millis_heater = millis();
+      
+      manage_inactivity(2);
+    }
+    #ifdef RAMP_ACCELERATION
+    //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
     if (acceleration_enabled && steps_done == 0) {
         interval = max_interval;
     } else if (acceleration_enabled && steps_done <= plateau_steps) {
@@ -1056,93 +1118,129 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
       interval = full_interval;
       accelerating = false;
     }
-  
-    //If there are x, y or e steps remaining, perform Bresenham algorithm
-    if(x_steps_remaining || y_steps_remaining || e_steps_remaining) {
-      if(NotHome){
-        if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) x_steps_remaining=0;
-        if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) y_steps_remaining=0;
+    #endif
+    #ifdef EXP_ACCELERATION
+    //If acceleration is enabled on this move and we are in the acceleration segment, calculate the current interval
+    if (acceleration_enabled && steps_done < full_velocity_steps && steps_done / full_velocity_steps < 1 && (steps_done % steps_acceleration_check == 0)) {
+      if(steps_done == 0) {
+        interval = max_interval;
+      } else {
+        interval = max_interval - ((max_interval - full_interval) * steps_done / virtual_full_velocity_steps);
       }
+    } else if (acceleration_enabled && steps_remaining < full_velocity_steps) {
+      //Else, if acceleration is enabled on this move and we are in the deceleration segment, calculate the current interval
+      if(steps_remaining == 0) {
+        interval = max_interval;
+      } else {
+        interval = max_interval - ((max_interval - full_interval) * steps_remaining / virtual_full_velocity_steps);
+      }
+      accelerating = true;
+    } else if (steps_done - full_velocity_steps >= 1 || !acceleration_enabled){
+      //Else, we are just use the full speed interval as current interval
+      interval = full_interval;
+      accelerating = false;
+    }
+    #endif
+
+    //If there are x or y steps remaining, perform Bresenham algorithm
+    if(x_steps_remaining || y_steps_remaining) {
+      if(X_MIN_PIN > -1) if(!direction_x) if(digitalRead(X_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(Y_MIN_PIN > -1) if(!direction_y) if(digitalRead(Y_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(X_MAX_PIN > -1) if(direction_x) if(digitalRead(X_MAX_PIN) != ENDSTOPS_INVERTING) break;
+      if(Y_MAX_PIN > -1) if(direction_y) if(digitalRead(Y_MAX_PIN) != ENDSTOPS_INVERTING) break;
       if(steep_y) {
         timediff = micros() * 100 - previous_micros_y;
-        while(timediff >= interval && y_steps_remaining>0) {
+        while(timediff >= interval && y_steps_remaining > 0) {
           steps_done++;
           steps_remaining--;
-          y_steps_remaining--; timediff-=interval;
-          error_x -= delta_x;
-          error_e -= delta_e;
+          y_steps_remaining--; timediff -= interval;
+          error_x = error_x - delta_x;
           do_y_step();
           if(error_x < 0) {
             do_x_step(); x_steps_remaining--;
-            error_x += delta_y;
+            error_x = error_x + delta_y;
           }
-          if(error_e < 0) { 
-            do_e_step(); e_steps_remaining--;
-            error_e += delta_y;
-          }
+          #ifdef RAMP_ACCELERATION
           if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
+          #endif
+          #ifdef STEP_DELAY_RATIO
+          if(timediff >= interval) delayMicroseconds(long_step_delay_ratio * interval / 10000);
+          #endif
+          #ifdef STEP_DELAY_MICROS
+          if(timediff >= interval) delayMicroseconds(STEP_DELAY_MICROS);
+          #endif
         }
       } else if (steep_x) {
         timediff=micros() * 100 - previous_micros_x;
         while(timediff >= interval && x_steps_remaining>0) {
           steps_done++;
           steps_remaining--;
-          x_steps_remaining--; timediff-=interval;
-          error_y -= delta_y;
-          error_e -= delta_e;
+          x_steps_remaining--; timediff -= interval;
+          error_y = error_y - delta_y;
           do_x_step();
           if(error_y < 0) { 
             do_y_step(); y_steps_remaining--;
-            error_y += delta_x;
+            error_y = error_y + delta_x;
           }
-          if(error_e < 0) { 
-            do_e_step(); e_steps_remaining--;
-            error_e += delta_x;
-          }
+          #ifdef RAMP_ACCELERATION
           if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
-        }
-      } else if (steep_e) {
-        timediff=micros() * 100 - previous_micros_e;
-        while(timediff >= interval && e_steps_remaining>0) {
-          steps_done++;
-          steps_remaining--;
-          e_steps_remaining--;
-          timediff-=interval;
-          error_y -= delta_y;
-          error_x -= delta_x;
-          do_e_step();
-          if(error_y < 0) { 
-            do_y_step(); y_steps_remaining--;
-            error_y += delta_e;
-          }
-          if(error_x < 0) { 
-            do_x_step(); x_steps_remaining--;
-            error_x += delta_e;
-          }
-          if (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating)) break;
+          #endif
+          #ifdef STEP_DELAY_RATIO
+          if(timediff >= interval) delayMicroseconds(long_step_delay_ratio * interval / 10000);
+          #endif
+          #ifdef STEP_DELAY_MICROS
+          if(timediff >= interval) delayMicroseconds(STEP_DELAY_MICROS);
+          #endif
         }
       }
     }
-    if (steps_to_take>0 && (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating))) continue;
-   
+    #ifdef RAMP_ACCELERATION
+    if((x_steps_remaining>0 || y_steps_remaining>0) &&
+        steps_to_take > 0 && 
+        (steps_remaining == plateau_steps || (steps_done >= steps_to_take / 2 && accelerating && !decelerating))) continue;
+    #endif
+
     //If there are z steps remaining, check if z steps must be taken
     if(z_steps_remaining) {
-      if(NotHome){
-        if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) z_steps_remaining=0;
-      }
-      timediff=micros() * 100 - previous_micros_z;
-      while(timediff >= z_interval && z_steps_remaining) { 
+      if(Z_MIN_PIN > -1) if(!direction_z) if(digitalRead(Z_MIN_PIN) != ENDSTOPS_INVERTING) break;
+      if(Z_MAX_PIN > -1) if(direction_z) if(digitalRead(Z_MAX_PIN) != ENDSTOPS_INVERTING) break;
+      timediff = micros() * 100-previous_micros_z;
+      while(timediff >= z_interval && z_steps_remaining) {
         do_z_step();
         z_steps_remaining--;
-        timediff-=z_interval;
+        timediff -= z_interval;
+        #ifdef STEP_DELAY_RATIO
+        if(timediff >= z_interval) delayMicroseconds(long_step_delay_ratio * z_interval / 10000);
+        #endif
+        #ifdef STEP_DELAY_MICROS
+        if(timediff >= z_interval) delayMicroseconds(STEP_DELAY_MICROS);
+        #endif
       }
-    }    
-    
-    if(!accelerating &&  (millis() - previous_millis_heater) >= HEAT_INTERVAL ) {
-      manage_heaters();      
-      manage_inactivity(2);
     }
-  }//end while motion loop
+
+    //If there are e steps remaining, check if e steps must be taken
+    if(e_steps_remaining){
+      if (x_steps_to_take + y_steps_to_take <= 0) timediff = micros()*100 - previous_micros_e;
+      unsigned int final_e_steps_remaining = 0;
+      if (steep_x && x_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * x_steps_remaining / x_steps_to_take;
+      else if (steep_y && y_steps_to_take > 0) final_e_steps_remaining = e_steps_to_take * y_steps_remaining / y_steps_to_take;
+      //If this move has X or Y steps, let E follow the Bresenham pace
+      if (final_e_steps_remaining > 0)  while(e_steps_remaining > final_e_steps_remaining) { do_e_step(); e_steps_remaining--;}
+      else if (x_steps_to_take + y_steps_to_take > 0)  while(e_steps_remaining) { do_e_step(); e_steps_remaining--;}
+      //Else, normally check if e steps must be taken
+      else while (timediff >= e_interval && e_steps_remaining) {
+        do_e_step();
+        e_steps_remaining--;
+        timediff -= e_interval;
+        #ifdef STEP_DELAY_RATIO
+        if(timediff >= e_interval) delayMicroseconds(long_step_delay_ratio * e_interval / 10000);
+        #endif
+        #ifdef STEP_DELAY_MICROS
+        if(timediff >= e_interval) delayMicroseconds(STEP_DELAY_MICROS);
+        #endif
+      }
+    }
+  }
   
   if(DISABLE_X) disable_x();
   if(DISABLE_Y) disable_y();
@@ -1150,14 +1248,14 @@ void linear_move(float dest_x, float dest_y, float dest_z, float dest_e) // make
   if(DISABLE_E) disable_e();
   
   // Update current position partly based on direction, we probably can combine this with the direction code above...
-  if (dest_x > current_x) current_x += x_steps_to_take/x_steps_per_unit;
-  else current_x -= x_steps_to_take/x_steps_per_unit;
-  if (dest_y > current_y) current_y += y_steps_to_take/y_steps_per_unit;
-  else current_y -= y_steps_to_take/y_steps_per_unit;
-  if (dest_z > current_z) current_z += z_steps_to_take/z_steps_per_unit;
-  else current_z -= z_steps_to_take/z_steps_per_unit;
-//  if (dest_e > current_e) current_e = current_e + e_steps_to_take/e_steps_per_unit;
-//  else current_e = current_e - e_steps_to_take/e_steps_per_unit;
+  if (destination_x > current_x) current_x = current_x + x_steps_to_take / x_steps_per_unit;
+  else current_x = current_x - x_steps_to_take / x_steps_per_unit;
+  if (destination_y > current_y) current_y = current_y + y_steps_to_take / y_steps_per_unit;
+  else current_y = current_y - y_steps_to_take / y_steps_per_unit;
+  if (destination_z > current_z) current_z = current_z + z_steps_to_take / z_steps_per_unit;
+  else current_z = current_z - z_steps_to_take / z_steps_per_unit;
+  if (destination_e > current_e) current_e = current_e + e_steps_to_take / e_steps_per_unit;
+  else current_e = current_e - e_steps_to_take / e_steps_per_unit;
 }
 
 
@@ -1188,7 +1286,7 @@ inline void do_z_step()
 inline void do_e_step()
 {
   digitalWrite(E_STEP_PIN, HIGH);
-  previous_micros_e += interval;
+  previous_micros_e += e_interval;
   //delayMicroseconds(3);
   digitalWrite(E_STEP_PIN, LOW);
 }
@@ -1202,173 +1300,292 @@ inline void  enable_y() { if(Y_ENABLE_PIN > -1) digitalWrite(Y_ENABLE_PIN, Y_ENA
 inline void  enable_z() { if(Z_ENABLE_PIN > -1) digitalWrite(Z_ENABLE_PIN, Z_ENABLE_ON); }
 inline void  enable_e() { if(E_ENABLE_PIN > -1) digitalWrite(E_ENABLE_PIN, E_ENABLE_ON); }
 
-inline void manage_heaters()
+#define HEAT_INTERVAL 250
+#ifdef HEATER_USES_MAX6675
+unsigned long max6675_previous_millis = 0;
+int max6675_temp = 2000;
+
+inline int read_max6675()
 {
- if( (millis() - previous_millis_heater) >= HEAT_INTERVAL )
- {
-    previous_millis_heater = millis();
-    manage_nozzle();
-    manage_bed();
- }
-}
-void manage_nozzle()
-{
-  int pTerm;
-    int iTerm;
-    int dTerm;
-    //int output;
-    int error;
-    int temp_iState_min = -PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
-    int temp_iState_max = PID_INTEGRAL_DRIVE_MAX/PID_IGAIN;
-    
-    
-#ifdef THERMOCOUPLE
-//    prev_nozzle_curr = nozzle_curr;
-    tcTemperature();
-    //cancel heat command if heat error
-//    if(abs(prev_nozzle_curr-nozzle_curr)>100) {
-//      nozzle_targ = 0;
-//      Serial.println("nT err");
-//      return;
-//    }
-#else
-    //nozzle_curr = thTemperature(_thNTempTable, TEMP_1_PIN, nNUMTEMPS);
-    nozzle_curr = 1023 - analogRead(TEMP_1_PIN);
-#endif
-    // code for PID control
-    error = nozzle_targ - nozzle_curr;
-
-    pTerm = PID_PGAIN * error;
-
-    temp_iState += error;
-    temp_iState = constrain(temp_iState, temp_iState_min, temp_iState_max);
-    iTerm = PID_IGAIN * temp_iState;
-
-    dTerm = PID_DGAIN * (nozzle_curr - temp_dState);
-    temp_dState = nozzle_curr;
-
-    output = pTerm + iTerm - dTerm;
-    output = constrain(output, 0, PID_MAX);
+  if (millis() - max6675_previous_millis < HEAT_INTERVAL) 
+    return max6675_temp;
   
-    analogWrite(HEATER_1_PIN, output);
-}
-void manage_bed()
-{
-    int prev_curr = bed_curr;
-    int zone;
-    // code for thermistor bang-bang control
-    //bed_curr = thTemperature(_thTempTable, TEMP_0_PIN, bNUMTEMPS);
-    bed_curr = 1023 - analogRead(TEMP_0_PIN);
-    if(bed_curr >= prev_curr)
-    {
-      zone = bed_targ - LZONE;
-    }
-    if(bed_curr < prev_curr)
-    {
-      zone = bed_targ + UZONE;
-    }
-    if(bed_curr<zone)
-    {
-      digitalWrite(HEATER_0_PIN, HIGH);
-    }else{
-      digitalWrite(HEATER_0_PIN, LOW);
-    }
-}
-#ifdef THERMOCOUPLE
-void tcTemperature()
-{
-  int value = 0;
-  byte error_tc = 0;
+  max6675_previous_millis = millis();
 
-  digitalWrite(MAX6675_EN, 0); // Enable device
+  max6675_temp = 0;
+    
+  #ifdef	PRR
+    PRR &= ~(1<<PRSPI);
+  #elif defined PRR0
+    PRR0 &= ~(1<<PRSPI);
+  #endif
+  
+  SPCR = (1<<MSTR) | (1<<SPE) | (1<<SPR0);
+  
+  // enable TT_MAX6675
+  digitalWrite(MAX6675_SS, 0);
+  
+  // ensure 100ns delay - a bit extra is fine
+  delay(1);
+  
+  // read MSB
+  SPDR = 0;
+  for (;(SPSR & (1<<SPIF)) == 0;);
+  max6675_temp = SPDR;
+  max6675_temp <<= 8;
+  
+  // read LSB
+  SPDR = 0;
+  for (;(SPSR & (1<<SPIF)) == 0;);
+  max6675_temp |= SPDR;
+  
+  // disable TT_MAX6675
+  digitalWrite(MAX6675_SS, 1);
 
-  /* Cycle the clock for dummy bit 15 */
-  digitalWrite(MAX6675_SCK,1);
-  digitalWrite(MAX6675_SCK,0);
-
-  /* Read bits 14-3 from MAX6675 for the Temp
-  Loop for each bit reading the value */
-  for (int i=11; i>=0; i--)
+  if (max6675_temp & 4) 
   {
-    digitalWrite(MAX6675_SCK,1);  // Set Clock to HIGH
-    value += digitalRead(MAX6675_SO) << i;  // Read data and add it to our variable
-    digitalWrite(MAX6675_SCK,0);  // Set Clock to LOW
+    // thermocouple open
+    max6675_temp = 2000;
+  }
+  else 
+  {
+    max6675_temp = max6675_temp >> 3;
   }
 
-  /* Read the TC Input inp to check for TC Errors */
-  digitalWrite(MAX6675_SCK,1); // Set Clock to HIGH
-  error_tc = digitalRead(MAX6675_SO); // Read data
-  digitalWrite(MAX6675_SCK,0);  // Set Clock to LOW
-
-  digitalWrite(MAX6675_EN, 1); //Disable Device
-
-  if(error_tc || (value / TEMP_MULTIPLIER) > 300 )
-  {
-    nozzle_curr = 9999;
-  }else{
-    //nozzle_curr = value/4;
-    nozzle_curr = value;
-  }
-
+  return max6675_temp;
 }
 #endif
-// Takes hot end temperature value as input and returns corresponding analog value from RepRap thermistor temp table.
+
+
+inline void manage_heater()
+{
+  #ifdef HEATER_USES_THERMISTOR
+    current_raw = analogRead(TEMP_0_PIN); 
+    // When using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
+    // this switches it up so that the reading appears lower than target for the control logic.
+    current_raw = 1023 - current_raw;
+  #elif defined HEATER_USES_AD595
+    current_raw = analogRead(TEMP_0_PIN);    
+  #elif defined HEATER_USES_MAX6675
+    current_raw = read_max6675();
+  #endif
+  #ifdef SMOOTHING
+  nma = (nma + current_raw) - (nma / SMOOTHFACTOR);
+  current_raw = nma / SMOOTHFACTOR;
+  #endif
+  #ifdef WATCHPERIOD
+    if(watchmillis && millis() - watchmillis > WATCHPERIOD){
+        if(watch_raw + 1 >= current_raw){
+            target_raw = 0;
+            digitalWrite(HEATER_0_PIN,LOW);
+            digitalWrite(LED_PIN,LOW);
+        }else{
+            watchmillis = 0;
+        }
+    }
+  #endif
+  #ifdef MINTEMP
+    if(current_raw <= minttemp)
+        target_raw = 0;
+  #endif
+  #ifdef MAXTEMP
+    if(current_raw >= maxttemp) {
+        target_raw = 0;
+    }
+  #endif
+  #if (TEMP_0_PIN > -1) || defined (HEATER_USES_MAX66675)
+    #ifdef PIDTEMP
+      error = target_raw - current_raw;
+      pTerm = (PID_PGAIN * error) / 100;
+      temp_iState += error;
+      temp_iState = constrain(temp_iState, temp_iState_min, temp_iState_max);
+      iTerm = (PID_IGAIN * temp_iState) / 100;
+      dTerm = (PID_DGAIN * (current_raw - temp_dState)) / 100;
+      temp_dState = current_raw;
+      analogWrite(HEATER_0_PIN, constrain(pTerm + iTerm - dTerm, 0, PID_MAX));
+    #else
+      if(current_raw >= target_raw)
+      {
+        digitalWrite(HEATER_0_PIN,LOW);
+        digitalWrite(LED_PIN,LOW);
+      }
+      else 
+      {
+        digitalWrite(HEATER_0_PIN,HIGH);
+        digitalWrite(LED_PIN,HIGH);
+      }
+    #endif
+  #endif
+  
+  if(millis() - previous_millis_bed_heater < 5000)
+    return;
+  previous_millis_bed_heater = millis();
+
+  #ifdef BED_USES_THERMISTOR
+
+    current_bed_raw = analogRead(TEMP_1_PIN);                  
+
+    // If using thermistor, when the heater is colder than targer temp, we get a higher analog reading than target, 
+    // this switches it up so that the reading appears lower than target for the control logic.
+    current_bed_raw = 1023 - current_bed_raw;
+  #elif defined BED_USES_AD595
+    current_bed_raw = analogRead(TEMP_1_PIN);                  
+
+  #endif
+  
+
+  #if TEMP_1_PIN > -1
+    if(current_bed_raw >= target_bed_raw)
+    {
+      digitalWrite(HEATER_1_PIN,LOW);
+    }
+    else 
+    {
+      digitalWrite(HEATER_1_PIN,HIGH);
+    }
+  #endif
+}
+
+// Takes hot end temperature value as input and returns corresponding raw value. 
+// For a thermistor, it uses the RepRap thermistor temp table.
 // This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
 // This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
-float temp2analog(int celsius, short table[][2], int numtemps) {
+float temp2analog(int celsius) {
+  #ifdef HEATER_USES_THERMISTOR
     int raw = 0;
     byte i;
     
-    for (i=1; i<numtemps; i++)
+    for (i=1; i<NUMTEMPS; i++)
     {
-      if (table[i][1] < celsius)
+      if (temptable[i][1] < celsius)
       {
-        raw = table[i-1][0] + 
-          (celsius - table[i-1][1]) * 
-          (table[i][0] - table[i-1][0]) /
-          (table[i][1] - table[i-1][1]);
+        raw = temptable[i-1][0] + 
+          (celsius - temptable[i-1][1]) * 
+          (temptable[i][0] - temptable[i-1][0]) /
+          (temptable[i][1] - temptable[i-1][1]);
       
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == numtemps) raw = table[i-1][0];
+    if (i == NUMTEMPS) raw = temptable[i-1][0];
 
     return 1023 - raw;
+  #elif defined HEATER_USES_AD595
+    return celsius * (1024.0 / (5.0 * 100.0) );
+  #elif defined HEATER_USES_MAX6675
+    return celsius * 4.0;
+  #endif
+}
+
+// Takes bed temperature value as input and returns corresponding raw value. 
+// For a thermistor, it uses the RepRap thermistor temp table.
+// This is needed because PID in hydra firmware hovers around a given analog value, not a temp value.
+// This function is derived from inversing the logic from a portion of getTemperature() in FiveD RepRap firmware.
+float temp2analogBed(int celsius) {
+  #ifdef BED_USES_THERMISTOR
+
+    int raw = 0;
+    byte i;
+    
+    for (i=1; i<BNUMTEMPS; i++)
+    {
+      if (bedtemptable[i][1] < celsius)
+      {
+        raw = bedtemptable[i-1][0] + 
+          (celsius - bedtemptable[i-1][1]) * 
+          (bedtemptable[i][0] - bedtemptable[i-1][0]) /
+          (bedtemptable[i][1] - bedtemptable[i-1][1]);
+      
+        break;
+      }
+    }
+
+    // Overflow: Set to last value in the table
+    if (i == BNUMTEMPS) raw = bedtemptable[i-1][0];
+
+    return 1023 - raw;
+  #elif defined BED_USES_AD595
+    return celsius * (1024.0 / (5.0 * 100.0) );
+  #endif
 }
 
 // Derived from RepRap FiveD extruder::getTemperature()
-float analog2temp(int raw, short table[][2], int numtemps) {
+// For hot end temperature measurement.
+float analog2temp(int raw) {
+  #ifdef HEATER_USES_THERMISTOR
     int celsius = 0;
     byte i;
-    int raw_ = 1023 - raw;
+    
+    raw = 1023 - raw;
 
-    for (i=1; i<numtemps; i++)
+    for (i=1; i<NUMTEMPS; i++)
     {
-      if (table[i][0] > raw_)
+      if (temptable[i][0] > raw)
       {
-        celsius  = table[i-1][1] + 
-          (raw_ - table[i-1][0]) * 
-          (table[i][1] - table[i-1][1]) /
-          (table[i][0] - table[i-1][0]);
+        celsius  = temptable[i-1][1] + 
+          (raw - temptable[i-1][0]) * 
+          (temptable[i][1] - temptable[i-1][1]) /
+          (temptable[i][0] - temptable[i-1][0]);
 
         break;
       }
     }
 
     // Overflow: Set to last value in the table
-    if (i == numtemps) celsius = table[i-1][1];
+    if (i == NUMTEMPS) celsius = temptable[i-1][1];
+
+    return celsius;
+  #elif defined HEATER_USES_AD595
+    return raw * ((5.0 * 100.0) / 1024.0);
+  #elif defined HEATER_USES_MAX6675
+    return raw * 0.25;
+  #endif
+}
+
+// Derived from RepRap FiveD extruder::getTemperature()
+// For bed temperature measurement.
+float analog2tempBed(int raw) {
+  #ifdef BED_USES_THERMISTOR
+    int celsius = 0;
+    byte i;
+
+    raw = 1023 - raw;
+
+    for (i=1; i<NUMTEMPS; i++)
+    {
+      if (bedtemptable[i][0] > raw)
+      {
+        celsius  = bedtemptable[i-1][1] + 
+          (raw - bedtemptable[i-1][0]) * 
+          (bedtemptable[i][1] - bedtemptable[i-1][1]) /
+          (bedtemptable[i][0] - bedtemptable[i-1][0]);
+
+        break;
+      }
+    }
+
+    // Overflow: Set to last value in the table
+    if (i == NUMTEMPS) celsius = bedtemptable[i-1][1];
 
     return celsius;
     
+  #elif defined BED_USES_AD595
+    return raw * ((5.0 * 100.0) / 1024.0);
+  #endif
 }
 
-inline void kill(byte debug)
+inline void kill()
 {
-  if(HEATER_0_PIN > -1) digitalWrite(HEATER_0_PIN,LOW);
+  #if TEMP_0_PIN > -1
+  target_raw=0;
+  digitalWrite(HEATER_0_PIN,LOW);
+  #endif
+  #if TEMP_1_PIN > -1
+  target_bed_raw=0;
   if(HEATER_1_PIN > -1) digitalWrite(HEATER_1_PIN,LOW);
-  
+  #endif
   disable_x();
   disable_y();
   disable_z();
@@ -1376,18 +1593,9 @@ inline void kill(byte debug)
   
   if(PS_ON_PIN > -1) pinMode(PS_ON_PIN,INPUT);
   
-  while(1)
-  {
-    switch(debug)
-    {
-      case 1: Serial.print("Inactivity Shutdown: "); break;
-      case 2: Serial.print("Linear Move Abort: "); break;
-/*      case 3: Serial.print("Homing X Min Stop Fail: "); break;
-      case 4: Serial.print("Homing Y Min Stop Fail: "); break;*/
-    } 
-    Serial.println(gcode_LastN);
-    delay(5000); // 5 Second delay
-  }
 }
 
-inline void manage_inactivity(byte debug) { if( (millis()-previous_millis_cmd) >  max_inactive_time ) if(max_inactive_time) kill(debug); }
+inline void manage_inactivity(byte debug) { 
+if( (millis()-previous_millis_cmd) >  max_inactive_time ) if(max_inactive_time) kill(); 
+if( (millis()-previous_millis_cmd) >  stepper_inactive_time ) if(stepper_inactive_time) { disable_x(); disable_y(); disable_z(); disable_e(); }
+}

@@ -1,20 +1,83 @@
 #ifndef PARAMETERS_H
 #define PARAMETERS_H
 
-#define DEBUG 0
 // NO RS485/EXTRUDER CONTROLLER SUPPORT
 // PLEASE VERIFY PIN ASSIGNMENTS FOR YOUR CONFIGURATION!!!!!!!
-#define MOTHERBOARD 3 // ATMEGA168 0, SANGUINO 1, MOTHERBOARD = 2, MEGA 3, ATMEGA328 4
+#define MOTHERBOARD 3 // ATMEGA168 = 0, SANGUINO = 1, MOTHERBOARD = 2, MEGA/RAMPS = 3, ATMEGA328 = 4, Gen6 = 5, Sanguinololu = 6
 
 //Comment out to disable SD support
 #define SDSUPPORT 1
 
+//Min step delay in microseconds. If you are experiencing missing steps, try to raise the delay microseconds, but be aware this
+// If you enable this, make sure STEP_DELAY_RATIO is disabled.
+#define STEP_DELAY_MICROS 1
+
+//Step delay over interval ratio. If you are still experiencing missing steps, try to uncomment the following line, but be aware this
+//If you enable this, make sure STEP_DELAY_MICROS is disabled.
+//#define STEP_DELAY_RATIO 0.25
+
+//Comment this to disable ramp acceleration
+#define RAMP_ACCELERATION 1
+
+//Uncomment this to enable exponential acceleration
+//#define EXP_ACCELERATION 1
+
 //Acceleration settings
-float min_units_per_second = 25;//10; // the minimum feedrate
-long max_acceleration_units_per_sq_second = 2000;//750; // Max acceleration in mm/s^2 for printing moves
-//long max_travel_acceleration_units_per_sq_second = 1500; // Max acceleration in mm/s^2 for travel moves
-//const bool USE_THERMISTOR = true; //Set to false if using thermocouple
-//#define THERMOCOUPLE
+#ifdef RAMP_ACCELERATION
+float min_units_per_second = 35.0; // the minimum feedrate
+long max_acceleration_units_per_sq_second = 750; // Max acceleration in mm/s^2 for printing moves
+long max_travel_acceleration_units_per_sq_second = 1500; // Max acceleration in mm/s^2 for travel moves
+#endif
+#ifdef EXP_ACCELERATION
+float full_velocity_units = 10; // the units between minimum and G1 move feedrate
+float travel_move_full_velocity_units = 10; // used for travel moves
+float min_units_per_second = 35.0; // the minimum feedrate
+float min_constant_speed_units = 2; // the minimum units of an accelerated move that must be done at constant speed
+                                    // Note that if the move is shorter than this value, acceleration won't be perfomed,
+                                    // but will be done at the minimum between min_units_per_seconds and move feedrate speeds.
+#endif
+
+// AD595 THERMOCOUPLE SUPPORT UNTESTED... USE WITH CAUTION!!!!
+
+//PID settings:
+//Uncomment the following line to enable PID support. This is untested and could be disastrous. Be careful.
+//#define PIDTEMP 1
+#ifdef PIDTEMP
+#define PID_MAX 255 // limits current to nozzle
+#define PID_INTEGRAL_DRIVE_MAX 220
+#define PID_PGAIN 180 //100 is 1.0
+#define PID_IGAIN 2 //100 is 1.0
+#define PID_DGAIN 100 //100 is 1.0
+#endif
+
+//How often should the heater check for new temp readings, in milliseconds
+#define HEATER_CHECK_INTERVAL 50
+
+//Experimental temperature smoothing - only uncomment this if your temp readings are noisy
+//#define SMOOTHING 1
+//#define SMOOTHFACTOR 16 //best to use a power of two here - determines how many values are averaged together by the smoothing algorithm
+
+//Experimental watchdog and minimal temp
+//The watchdog waits for the watchperiod in milliseconds whenever an M104 or M109 increases the target temperature
+//If the temperature has not increased at the end of that period, the target temperature is set to zero. It can be reset with another M104/M109
+//#define WATCHPERIOD 5000 //5 seconds
+//The minimal temperature defines the temperature below which the heater will not be enabled
+//#define MINTEMP 
+
+//Experimental max temp
+//When temperature exceeds max temp, your bot will halt.
+//This feature exists to protect your hotend from overheating accidentally, but *NOT* from thermistor short/failure!
+//You should use MINTEMP for thermistor short/failure protection.
+//#define MAXTEMP 275
+
+// Select one of these only to define how the nozzle temp is read.
+#define HEATER_USES_THERMISTOR
+//#define HEATER_USES_AD595
+//#define HEATER_USES_MAX6675
+
+// Select one of these only to define how the bed temp is read.
+#define BED_USES_THERMISTOR
+//#define BED_USES_AD595
 
 // Calibration formulas
 // e_extruded_steps_per_mm = e_feedstock_steps_per_mm * (desired_extrusion_diameter^2 / feedstock_diameter^2)
@@ -22,13 +85,18 @@ long max_acceleration_units_per_sq_second = 2000;//750; // Max acceleration in m
 // units are in millimeters or whatever length unit you prefer: inches,football-fields,parsecs etc
 
 //Calibration variables
-float x_steps_per_unit = 80;
-float y_steps_per_unit = 80;
-float z_steps_per_unit = 4571.43;
-float e_steps_per_unit = 724.022; //65.304; //set for sf40 TO 0.85*measured filament feed
+float x_steps_per_unit = 80.376;
+float y_steps_per_unit = 80.376;
+float z_steps_per_unit = 3200/1.25;
+float e_steps_per_unit = 16;
+float max_feedrate = 200000; //mmm, acceleration!
+float max_z_feedrate = 120;
 
-#define RAPID_Z 500
-#define RAPID_XY 30000
+//float x_steps_per_unit = 10.047;
+//float y_steps_per_unit = 10.047;
+//float z_steps_per_unit = 833.398;
+//float e_steps_per_unit = 0.706;
+//float max_feedrate = 3000;
 
 //For Inverting Stepper Enable Pins (Active Low) use 0, Non Inverting (Active High) use 1
 const bool X_ENABLE_ON = 0;
@@ -42,187 +110,39 @@ const bool DISABLE_Y = false;
 const bool DISABLE_Z = true;
 const bool DISABLE_E = false;
 
-const bool INVERT_X_DIR = true;
+const bool INVERT_X_DIR = false;
 const bool INVERT_Y_DIR = false;
-const bool INVERT_Z_DIR = false;
-const bool INVERT_E_DIR = true;
+const bool INVERT_Z_DIR = true;
+const bool INVERT_E_DIR = false;
+
+//Thermistor settings:
+
+//Uncomment for 100k thermistor
+//#include "ThermistorTable_100k.h"
+//#include "BedThermistorTable_100k.h"
+
+//Uncomment for 200k thermistor
+//#include "ThermistorTable_200k.h"
+//#include "BedThermistorTable_200k.h"
+
+//Identical thermistors on heater and bed - use this if you have no heated bed or if the thermistors are the same on both:
+#include "ThermistorTable_200k.h"
+//#include "ThermistorTable_100k.h"
+//#include "ThermistorTable_mendelparts.h"
+#define BNUMTEMPS NUMTEMPS
+#define bedtemptable temptable
 
 //Endstop Settings
 #define ENDSTOPPULLUPS 1
-const bool ENDSTOPS_INVERTING = 0;
-const bool min_software_endstops = true; //If true, axis won't move to coordinates less than zero.
+const bool ENDSTOPS_INVERTING = false;
+const bool min_software_endstops = false; //If true, axis won't move to coordinates less than zero.
 const bool max_software_endstops = true;  //If true, axis won't move to coordinates greater than the defined lengths below.
-const int X_MAX_LENGTH = 150;
-const int Y_MAX_LENGTH = 148;
+const int X_MAX_LENGTH = 220;
+const int Y_MAX_LENGTH = 220;
 const int Z_MAX_LENGTH = 100;
 
-//#define PROBING
-#ifdef PROBING
-  //probing position
-  #define Z_HOME_X 70
-  #define Z_HOME_Y 70
-  #define PROBE_PIN 19 //use Z max pin
-#endif
-
 #define BAUDRATE 115200
-#define MAX_CMD_SIZE 256
 
-#define HEAT_INTERVAL 225 // extruder control interval in milliseconds
-#define LZONE 0
-#define UZONE 1
 
-//RESISTOR 12 OHM
-#define PID_MAX 255 // limits current to nozzle
-#define PID_INTEGRAL_DRIVE_MAX 220 //200
-#define PID_PGAIN 1.8 //1.8
-#define PID_IGAIN 0.02//0.02
-#define PID_DGAIN 1.0//1.0
-
-#define TEMP_MULTIPLIER 4 //1
-#define NZONE 5
-
-//bed table
-#define bNUMTEMPS 33
-short _thTempTable[bNUMTEMPS][2] = {
-
-{704,155},
-{714,150},
-{724,145},
-{734,140},
-{744,135},
-{754,130},
-{764,125},
-{774,120},
-{784,115},
-{794,110},
-{804,105},
-{814,100},
-{824,95},
-{834,90},
-{844,85},
-{854,80},
-{864,75},
-{874,70},
-{884,65},
-{894,60},
-{904,55},
-{914,50},
-{924,45},
-{934,40},
-{944,35},
-{954,30},
-{964,25},
-{974,20},
-{984,15},
-{994,10},
-{1004,5},
-{1014,0},
-{1024,-5}
-};
-
-#ifndef THERMOCOUPLE
-//nozzle table
-#define nNUMTEMPS 40
-short  _thNTempTable[nNUMTEMPS][2] = {
-   {1, 9999},
-   {27, 400},
-   {53, 300},
-   {79, 290},
-   {105, 280},
-   {131, 270},
-   {157, 260},
-   {183, 250},
-   {209, 240},
-   {235, 230},
-   {261, 220},
-   {287, 210},
-   {313, 197},
-   {340, 193},
-   {366, 184},
-   {391, 174},
-   {417, 170},
-   {442, 163},
-   {467, 157},
-   {495, 151},
-   {521, 134},
-   {547, 125},
-   {573, 129},
-   {599, 124},
-   {625, 120},
-   {652, 112},
-   {677, 107},
-   {704, 101},
-   {729, 95},
-   {755, 91},
-   {781, 87},
-   {806, 80},
-   {831, 74},
-   {860, 65},
-   {886, 57},
-   {910, 47},
-   {936, 36},
-   {963, 29},
-   {991, 14},
-   {1015, 2}
-};
-#endif
-
-/****************************************************************************************
-* Arduino Mega pin assignment
-*
-****************************************************************************************/
-
-#ifndef __AVR_ATmega1280__
- #ifndef __AVR_ATmega2560__
- #error Oops!  Make sure you have 'Arduino Mega' selected from the 'Tools -> Boards' menu.
- #endif
-#endif
-
-  #define X_STEP_PIN         26
-  #define X_DIR_PIN          28
-  #define X_ENABLE_PIN       24
-  #define X_MIN_PIN           3
-  #define X_MAX_PIN           -1//2
-  
-  #define Y_STEP_PIN         38
-  #define Y_DIR_PIN          40
-  #define Y_ENABLE_PIN       36
-  #define Y_MIN_PIN          16
-  #define Y_MAX_PIN          -1//17
-  
-  #define Z_STEP_PIN         44
-  #define Z_DIR_PIN          46
-  #define Z_ENABLE_PIN       42
-  #define Z_MIN_PIN          18
-  #define Z_MAX_PIN          -1//19
-  
-  #define E_STEP_PIN         32
-  #define E_DIR_PIN          34
-  #define E_ENABLE_PIN       30
-  
-  #define LED_PIN            13
-  
-  //#define FAN_PIN            11 // UNCOMMENT THIS LINE FOR V1.0
-  #define FAN_PIN            9 // THIS LINE FOR V1.1
-  
-  #define PS_ON_PIN          -1
-  #define KILL_PIN           -1
-  
-  //#define HEATER_0_PIN        12  // UNCOMMENT THIS LINE FOR V1.0
-  #define HEATER_1_PIN       10 // THIS LINE FOR V1.1
-#ifndef THERMOCOUPLE
-  #define TEMP_1_PIN          1   // MUST USE ANALOG INPUT NUMBERING NOT DIGITAL OUTPUT NUMBERING!!!!!!!!!
-#endif
-  
-  #define HEATER_0_PIN        8
-  #define TEMP_0_PIN          2
-
-  //MAX6675 nozzle heater pins
-  #define MAX6675_EN 41//50 //19
-  #define MAX6675_SO 39//48 //20
-  #define MAX6675_SCK 43//52 //21
-  
-  #define SDPOWER          48
-  #define SDSS          53
 
 #endif
